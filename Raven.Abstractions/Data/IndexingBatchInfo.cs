@@ -1,39 +1,62 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace Raven.Abstractions.Data
 {
-	public class IndexingBatchInfo : IEquatable<IndexingBatchInfo>
-	{
-		public int TotalDocumentCount { get; set; }
+    public class IndexingBatchInfo
+    {
+        /// <summary>
+        /// Type of batch (Standard, Precomputed).
+        /// </summary>
+        public BatchType BatchType { get; set; }
 
-		public long TotalDocumentSize { get; set; }
+        /// <summary>
+        /// List of indexes (names) that processed this batch.
+        /// </summary>
+        public List<string> IndexesToWorkOn { get; set; }
 
-		public DateTime Timestamp { get; set; }
+        /// <summary>
+        /// Total count of documents in batch.
+        /// </summary>
+        public int TotalDocumentCount { get; set; }
 
-		public bool Equals(IndexingBatchInfo other)
-		{
-			if (ReferenceEquals(null, other)) return false;
-			if (ReferenceEquals(this, other)) return true;
-			return TotalDocumentCount == other.TotalDocumentCount && TotalDocumentSize == other.TotalDocumentSize && Timestamp.Equals(other.Timestamp);
-		}
+        /// <summary>
+        /// Total size of documents in batch (in bytes).
+        /// </summary>
+        public long TotalDocumentSize { get; set; }
+        
+        /// <summary>
+        /// Batch processing start time.
+        /// </summary>
+        public DateTime StartedAt { get; set; }
 
-		public override bool Equals(object obj)
-		{
-			if (ReferenceEquals(null, obj)) return false;
-			if (ReferenceEquals(this, obj)) return true;
-			if (obj.GetType() != GetType()) return false;
-			return Equals((IndexingBatchInfo) obj);
-		}
+        /// <summary>
+        /// Total batch processing time in milliseconds.
+        /// </summary>
+        public double TotalDurationMs { get; set; }
 
-		public override int GetHashCode()
-		{
-			unchecked
-			{
-				var hashCode = TotalDocumentCount;
-				hashCode = (hashCode*397) ^ TotalDocumentSize.GetHashCode();
-				hashCode = (hashCode*397) ^ Timestamp.GetHashCode();
-				return hashCode;
-			}
-		}		
-	}
+        /// <summary>
+        /// Time (in milliseconds) that passed since first index completed the batch to full batch completion.
+        /// </summary>
+        public double TimeSinceFirstIndexInBatchCompletedMs { get; set; }
+
+        public ConcurrentDictionary<string, IndexingPerformanceStats> PerformanceStats { get; set; }
+
+        public void BatchCompleted()
+        {
+            var now = SystemTime.UtcNow;
+            TotalDurationMs = (now - StartedAt).TotalMilliseconds;
+
+            if (PerformanceStats.Count > 0)
+                TimeSinceFirstIndexInBatchCompletedMs = (now - PerformanceStats.Min(x => x.Value.Completed)).TotalMilliseconds;
+        }
+    }
+
+    public enum BatchType
+    {
+        Standard,
+        Precomputed
+    }
 }

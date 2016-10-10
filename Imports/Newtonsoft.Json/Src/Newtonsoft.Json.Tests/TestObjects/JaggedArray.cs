@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -25,10 +25,10 @@
 
 namespace Newtonsoft.Json.Tests.TestObjects
 {
-  public class JaggedArray
-  {
-    public string Before { get; set; }
-    public int[][] Coordinates { get; set; }
-    public string After { get; set; }
-  }
+    public class JaggedArray
+    {
+        public string Before { get; set; }
+        public int[][] Coordinates { get; set; }
+        public string After { get; set; }
+    }
 }

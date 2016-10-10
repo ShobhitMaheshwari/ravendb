@@ -6,41 +6,103 @@
 using System;
 using System.Collections.Specialized;
 using System.IO;
+using System.Net;
 using System.Runtime.Caching;
+using System.Threading;
 using Raven.Abstractions.Data;
 using Raven.Database.Config.Settings;
 
 namespace Raven.Database.Config
 {
-	public class StronglyTypedRavenSettings
-	{
-		private readonly NameValueCollection settings;
+    internal class StronglyTypedRavenSettings
+    {
+        private readonly NameValueCollection settings;
 
-		public StronglyTypedRavenSettings(NameValueCollection settings)
-		{
-			this.settings = settings;
-		}
+        public ReplicationConfiguration Replication { get; private set; }
 
-		public void Setup(int defaultMaxNumberOfItemsToIndexInSingleBatch, int defaultInitialNumberOfItemsToIndexInSingleBatch)
-		{
-			MemoryLimitForIndexing = new IntegerSetting(settings[Constants.MemoryLimitForIndexing],
+        public VoronConfiguration Voron { get; private set; }
+
+        public EsentConfiguration Esent { get; private set; }
+
+        public PrefetcherConfiguration Prefetcher { get; private set; }
+
+        public FileSystemConfiguration FileSystem { get; private set; }
+
+        public EncryptionConfiguration Encryption { get; private set; }
+
+        public IndexingConfiguration Indexing { get; set; }
+
+        public WebSocketsConfiguration WebSockets { get; set; }
+
+        public StudioConfiguration Studio { get; private set; }
+
+        public StronglyTypedRavenSettings(NameValueCollection settings)
+        {
+            Replication = new ReplicationConfiguration();
+            Voron = new VoronConfiguration();
+            Esent = new EsentConfiguration();
+            Prefetcher = new PrefetcherConfiguration();
+            FileSystem = new FileSystemConfiguration();
+            Encryption = new EncryptionConfiguration();
+            Indexing = new IndexingConfiguration();
+            WebSockets = new WebSocketsConfiguration();
+            Studio = new StudioConfiguration();
+
+            this.settings = settings;
+        }
+
+        public void Setup(int defaultMaxNumberOfItemsToIndexInSingleBatch, int defaultInitialNumberOfItemsToIndexInSingleBatch)
+        { 
+            const int defaultPrecomputedBatchSize = 32 * 1024;
+            MaxPrecomputedBatchSizeForNewIndex = new IntegerSetting(settings["Raven/MaxPrecomputedBatchSizeForNewIndex"], defaultPrecomputedBatchSize);
+
+            const int defaultPrecomputedBatchTotalDocumentSizeInBytes = 1024*1024*250;  //250 mb
+            MaxPrecomputedBatchTotalDocumentSizeInBytes = new IntegerSetting(settings["Raven/MaxPrecomputedBatchTotalDocumentSizeInBytes"], defaultPrecomputedBatchTotalDocumentSizeInBytes);
+
+            //1024 is Lucene.net default - so if the setting is not set it will be the same as not touching Lucene's settings at all
+            MaxClauseCount = new IntegerSetting(settings[Constants.MaxClauseCount], 1024);
+
+            AllowScriptsToAdjustNumberOfSteps = new BooleanSetting(settings[Constants.AllowScriptsToAdjustNumberOfSteps], false);
+
+            IndexAndTransformerReplicationLatencyInSec = new IntegerSetting(settings[Constants.RavenIndexAndTransformerReplicationLatencyInSec], Constants.DefaultRavenIndexAndTransformerReplicationLatencyInSec);
+
+            PrefetchingDurationLimit = new IntegerSetting(settings[Constants.RavenPrefetchingDurationLimit], Constants.DefaultPrefetchingDurationLimit);
+
+            BulkImportBatchTimeout = new TimeSpanSetting(settings[Constants.BulkImportBatchTimeout], TimeSpan.FromMilliseconds(Constants.BulkImportDefaultTimeoutInMs), TimeSpanArgumentType.FromParse);
+
+            MaxConcurrentServerRequests = new IntegerSetting(settings[Constants.MaxConcurrentServerRequests], 512);
+
+            MaxConcurrentRequestsForDatabaseDuringLoad = new IntegerSetting(settings[Constants.MaxConcurrentRequestsForDatabaseDuringLoad], 50);
+
+            MaxSecondsForTaskToWaitForDatabaseToLoad = new IntegerSetting(settings[Constants.MaxSecondsForTaskToWaitForDatabaseToLoad], 5);
+
+            MaxConcurrentMultiGetRequests = new IntegerSetting(settings[Constants.MaxConcurrentMultiGetRequests], 192);
+
+            MemoryLimitForProcessing = new IntegerSetting(settings[Constants.MemoryLimitForProcessing] ?? settings[Constants.MemoryLimitForProcessing_BackwardCompatibility],
                 // we allow 1 GB by default, or up to 75% of available memory on startup, if less than that is available
-                Math.Min(1024, (int)(MemoryStatistics.AvailableMemory * 0.75))); 
+                Math.Min(1024, (int)(MemoryStatistics.AvailableMemoryInMb * 0.75)));
 
-		    EncryptionKeyBitsPreference = new IntegerSetting(settings[Constants.EncryptionKeyBitsPreferenceSetting],
-		        Constants.DefaultKeySizeToUseInActualEncryptionInBits);
-			MaxPageSize =
-				new IntegerSettingWithMin(settings["Raven/MaxPageSize"], 1024, 10);
-			MemoryCacheLimitMegabytes =
-				new IntegerSetting(settings["Raven/MemoryCacheLimitMegabytes"], GetDefaultMemoryCacheLimitMegabytes);
-			MemoryCacheExpiration =
-				new TimeSpanSetting(settings["Raven/MemoryCacheExpiration"], TimeSpan.FromMinutes(5),
-				                    TimeSpanArgumentType.FromSeconds);
-			MemoryCacheLimitPercentage =
-				new IntegerSetting(settings["Raven/MemoryCacheLimitPercentage"], 0 /* auto size */);
-			MemoryCacheLimitCheckInterval =
-				new TimeSpanSetting(settings["Raven/MemoryCacheLimitCheckInterval"], MemoryCache.Default.PollingInterval,
-				                    TimeSpanArgumentType.FromParse);
+            int workerThreads;
+            int completionThreads;
+            ThreadPool.GetMinThreads(out workerThreads, out completionThreads);
+            MinThreadPoolWorkerThreads =
+                new IntegerSettingWithMin(settings["Raven/MinThreadPoolWorkerThreads"], workerThreads, 2);
+            MinThreadPoolCompletionThreads =
+                new IntegerSettingWithMin(settings["Raven/MinThreadPoolCompletionThreads"], completionThreads, 2);
+
+            MaxPageSize =
+                new IntegerSettingWithMin(settings["Raven/MaxPageSize"], 1024, 10);
+
+            MemoryCacheLimitMegabytes =
+                new IntegerSetting(settings["Raven/MemoryCacheLimitMegabytes"], GetDefaultMemoryCacheLimitMegabytes);
+            MemoryCacheExpiration =
+                new TimeSpanSetting(settings["Raven/MemoryCacheExpiration"], TimeSpan.FromMinutes(60),
+                                    TimeSpanArgumentType.FromSeconds);
+            MemoryCacheLimitPercentage =
+                new IntegerSetting(settings["Raven/MemoryCacheLimitPercentage"], 0 /* auto size */);
+            MemoryCacheLimitCheckInterval =
+                new TimeSpanSetting(settings["Raven/MemoryCacheLimitCheckInterval"], MemoryCache.Default.PollingInterval,
+                                    TimeSpanArgumentType.FromParse);
 
             PrewarmFacetsSyncronousWaitTime =
                 new TimeSpanSetting(settings["Raven/PrewarmFacetsSyncronousWaitTime"], TimeSpan.FromSeconds(3),
@@ -49,239 +111,490 @@ namespace Raven.Database.Config
             PrewarmFacetsOnIndexingMaxAge =
                 new TimeSpanSetting(settings["Raven/PrewarmFacetsOnIndexingMaxAge"], TimeSpan.FromMinutes(10),
                                     TimeSpanArgumentType.FromParse);
-			
-			
-			MaxIndexingRunLatency =
-				new TimeSpanSetting(settings["Raven/MaxIndexingRunLatency"], TimeSpan.FromMinutes(5),
-				                    TimeSpanArgumentType.FromParse);
-			MaxIndexWritesBeforeRecreate =
-				new IntegerSetting(settings["Raven/MaxIndexWritesBeforeRecreate"], 256 * 1024);
-			PreventAutomaticSuggestionCreation =
-				new BooleanSetting(settings["Raven/PreventAutomaticSuggestionCreation"], false);
-			DisablePerformanceCounters =
-				new BooleanSetting(settings["Raven/DisablePerformanceCounters"], false);
 
-			MaxNumberOfItemsToIndexInSingleBatch =
-				new IntegerSettingWithMin(settings["Raven/MaxNumberOfItemsToIndexInSingleBatch"],
-				                          defaultMaxNumberOfItemsToIndexInSingleBatch, 128);
-			AvailableMemoryForRaisingIndexBatchSizeLimit =
-				new IntegerSetting(settings["Raven/AvailableMemoryForRaisingIndexBatchSizeLimit"],
-				                   Math.Min(768, MemoryStatistics.TotalPhysicalMemory/2));
-			MaxNumberOfItemsToReduceInSingleBatch =
-				new IntegerSettingWithMin(settings["Raven/MaxNumberOfItemsToReduceInSingleBatch"],
-				                          defaultMaxNumberOfItemsToIndexInSingleBatch/2, 128);
-			NumberOfItemsToExecuteReduceInSingleStep =
-				new IntegerSetting(settings["Raven/NumberOfItemsToExecuteReduceInSingleStep"], 1024);
-			MaxNumberOfParallelIndexTasks =
-				new IntegerSettingWithMin(settings["Raven/MaxNumberOfParallelIndexTasks"], Environment.ProcessorCount, 1);
 
-			NewIndexInMemoryMaxMb =
-				new MultipliedIntegerSetting(new IntegerSettingWithMin(settings["Raven/NewIndexInMemoryMaxMB"], 64, 1), 1024*1024);
-			RunInMemory =
-				new BooleanSetting(settings["Raven/RunInMemory"], false);
-			CreateAutoIndexesForAdHocQueriesIfNeeded =
-				new BooleanSetting(settings["Raven/CreateAutoIndexesForAdHocQueriesIfNeeded"], true);
-			ResetIndexOnUncleanShutdown =
-				new BooleanSetting(settings["Raven/ResetIndexOnUncleanShutdown"], false);
-			DisableInMemoryIndexing =
-				new BooleanSetting(settings["Raven/DisableInMemoryIndexing"], false);
-			DataDir =
-				new StringSetting(settings["Raven/DataDir"], @"~\Data");
-			IndexStoragePath =
-				new StringSetting(settings["Raven/IndexStoragePath"], (string) null);
-			HostName =
-				new StringSetting(settings["Raven/HostName"], (string) null);
-			Port =
-				new StringSetting(settings["Raven/Port"], (string) null);
-			UseSsl = 
-				new BooleanSetting(settings["Raven/UseSsl"], false);
-			HttpCompression =
-				new BooleanSetting(settings["Raven/HttpCompression"], true);
-			AccessControlAllowOrigin =
-				new StringSetting(settings["Raven/AccessControlAllowOrigin"], (string) null);
-			AccessControlMaxAge =
-				new StringSetting(settings["Raven/AccessControlMaxAge"], "1728000" /* 20 days */);
-			AccessControlAllowMethods =
-				new StringSetting(settings["Raven/AccessControlAllowMethods"], "PUT,PATCH,GET,DELETE,POST");
-			AccessControlRequestHeaders =
-				new StringSetting(settings["Raven/AccessControlRequestHeaders"], (string) null);
-			RedirectStudioUrl =
-				new StringSetting(settings["Raven/RedirectStudioUrl"], (string) null);
-			DisableDocumentPreFetchingForIndexing =
-				new BooleanSetting(settings["Raven/DisableDocumentPreFetchingForIndexing"], false);
-			MaxNumberOfItemsToPreFetchForIndexing =
-				new IntegerSettingWithMin(settings["Raven/MaxNumberOfItemsToPreFetchForIndexing"],
-										  defaultMaxNumberOfItemsToIndexInSingleBatch, 128);
-			WebDir =
-				new StringSetting(settings["Raven/WebDir"], GetDefaultWebDir);
-			PluginsDirectory =
-				new StringSetting(settings["Raven/PluginsDirectory"], @"~\Plugins");
-			CompiledIndexCacheDirectory =
-				new StringSetting(settings["Raven/CompiledIndexCacheDirectory"], @"~\Raven\CompiledIndexCache");
-			TaskScheduler =
-				new StringSetting(settings["Raven/TaskScheduler"], (string) null);
-			AllowLocalAccessWithoutAuthorization =
-				new BooleanSetting(settings["Raven/AllowLocalAccessWithoutAuthorization"], false);
-			MaxIndexCommitPointStoreTimeInterval =
-				new TimeSpanSetting(settings["Raven/MaxIndexCommitPointStoreTimeInterval"], TimeSpan.FromMinutes(5),
-				                    TimeSpanArgumentType.FromParse);
-			MaxNumberOfStoredCommitPoints =
-				new IntegerSetting(settings["Raven/MaxNumberOfStoredCommitPoints"], 5);
-			MinIndexingTimeIntervalToStoreCommitPoint =
-				new TimeSpanSetting(settings["Raven/MinIndexingTimeIntervalToStoreCommitPoint"], TimeSpan.FromMinutes(1),
-				                    TimeSpanArgumentType.FromParse);
-            
-			TimeToWaitBeforeRunningIdleIndexes = new TimeSpanSetting(settings["Raven/TimeToWaitBeforeRunningIdleIndexes"], TimeSpan.FromMinutes(10), TimeSpanArgumentType.FromParse);
+            MaxProcessingRunLatency =
+                new TimeSpanSetting(settings["Raven/MaxProcessingRunLatency"] ?? settings["Raven/MaxIndexingRunLatency"], TimeSpan.FromMinutes(5),
+                                    TimeSpanArgumentType.FromParse);
+            MaxIndexWritesBeforeRecreate =
+                new IntegerSetting(settings["Raven/MaxIndexWritesBeforeRecreate"], 256 * 1024);
+            MaxSimpleIndexOutputsPerDocument =
+                new IntegerSetting(settings["Raven/MaxSimpleIndexOutputsPerDocument"], 15);
 
-			DatbaseOperationTimeout = new TimeSpanSetting(settings["Raven/DatbaseOperationTimeout"], TimeSpan.FromMinutes(5), TimeSpanArgumentType.FromParse);
-            
-			TimeToWaitBeforeMarkingAutoIndexAsIdle = new TimeSpanSetting(settings["Raven/TimeToWaitBeforeMarkingAutoIndexAsIdle"], TimeSpan.FromHours(1), TimeSpanArgumentType.FromParse);
+            MaxMapReduceIndexOutputsPerDocument =
+                new IntegerSetting(settings["Raven/MaxMapReduceIndexOutputsPerDocument"], 50);
 
-			TimeToWaitBeforeMarkingIdleIndexAsAbandoned = new TimeSpanSetting(settings["Raven/TimeToWaitBeforeMarkingIdleIndexAsAbandoned"], TimeSpan.FromHours(72), TimeSpanArgumentType.FromParse);
+            MaxNumberOfItemsToProcessInSingleBatch =
+                new IntegerSettingWithMin(settings["Raven/MaxNumberOfItemsToProcessInSingleBatch"] ?? settings["Raven/MaxNumberOfItemsToIndexInSingleBatch"],
+                                          defaultMaxNumberOfItemsToIndexInSingleBatch, 128);
+            AvailableMemoryForRaisingBatchSizeLimit =
+                new IntegerSetting(settings["Raven/AvailableMemoryForRaisingBatchSizeLimit"] ?? settings["Raven/AvailableMemoryForRaisingIndexBatchSizeLimit"],
+                                   Math.Min(768, MemoryStatistics.TotalPhysicalMemory / 2));
+            MaxNumberOfItemsToReduceInSingleBatch =
+                new IntegerSettingWithMin(settings["Raven/MaxNumberOfItemsToReduceInSingleBatch"],
+                                          defaultMaxNumberOfItemsToIndexInSingleBatch / 2, 128);
+            NumberOfItemsToExecuteReduceInSingleStep =
+                new IntegerSetting(settings["Raven/NumberOfItemsToExecuteReduceInSingleStep"], 1024);
+            MaxNumberOfParallelProcessingTasks =
+                new IntegerSettingWithMin(settings["Raven/MaxNumberOfParallelProcessingTasks"] ?? settings["Raven/MaxNumberOfParallelIndexTasks"], Environment.ProcessorCount, 1);
 
-			TimeToWaitBeforeRunningAbandonedIndexes = new TimeSpanSetting(settings["Raven/TimeToWaitBeforeRunningAbandonedIndexes"], TimeSpan.FromHours(3), TimeSpanArgumentType.FromParse);
+            NewIndexInMemoryMaxTime =
+                new TimeSpanSetting(settings["Raven/NewIndexInMemoryMaxTime"], TimeSpan.FromMinutes(15), TimeSpanArgumentType.FromParse);
+            NewIndexInMemoryMaxMb =
+                new MultipliedIntegerSetting(new IntegerSettingWithMin(settings["Raven/NewIndexInMemoryMaxMB"], 64, 1), 1024 * 1024);
+            RunInMemory =
+                new BooleanSetting(settings[Constants.RunInMemory], false);
+            CreateAutoIndexesForAdHocQueriesIfNeeded =
+                new BooleanSetting(settings["Raven/CreateAutoIndexesForAdHocQueriesIfNeeded"], true);
+            ResetIndexOnUncleanShutdown =
+                new BooleanSetting(settings["Raven/ResetIndexOnUncleanShutdown"], false);
+            DisableInMemoryIndexing =
+                new BooleanSetting(settings["Raven/DisableInMemoryIndexing"], false);
+            WorkingDir =
+                new StringSetting(settings["Raven/WorkingDir"], @"~\");
+            DataDir =
+                new StringSetting(settings["Raven/DataDir"], @"~\Databases\System");
+            IndexStoragePath =
+                new StringSetting(settings["Raven/IndexStoragePath"], (string)null);
+            CountersDataDir =
+                new StringSetting(settings["Raven/Counters/DataDir"], @"~\Data\Counters");
 
-			DisableClusterDiscovery = new BooleanSetting(settings["Raven/DisableClusterDiscovery"], false);
+            HostName =
+                new StringSetting(settings["Raven/HostName"], (string)null);
+            Port =
+                new StringSetting(settings["Raven/Port"], "*");
+            ExposeConfigOverTheWire =
+                new StringSetting(settings[Constants.ExposeConfigOverTheWire], "Open");
+            HttpCompression =
+                new BooleanSetting(settings["Raven/HttpCompression"], true);
+            AccessControlAllowOrigin =
+                new StringSetting(settings["Raven/AccessControlAllowOrigin"], (string)null);
+            AccessControlMaxAge =
+                new StringSetting(settings["Raven/AccessControlMaxAge"], "1728000" /* 20 days */);
+            AccessControlAllowMethods =
+                new StringSetting(settings["Raven/AccessControlAllowMethods"], "PUT,PATCH,GET,DELETE,POST");
+            AccessControlRequestHeaders =
+                new StringSetting(settings["Raven/AccessControlRequestHeaders"], (string)null);
+            RedirectStudioUrl =
+                new StringSetting(settings["Raven/RedirectStudioUrl"], (string)null);
+            DisableDocumentPreFetching =
+                new BooleanSetting(settings["Raven/DisableDocumentPreFetching"] ?? settings["Raven/DisableDocumentPreFetchingForIndexing"], false);
+            MaxNumberOfItemsToPreFetch =
+                new IntegerSettingWithMin(settings["Raven/MaxNumberOfItemsToPreFetch"] ?? settings["Raven/MaxNumberOfItemsToPreFetchForIndexing"],
+                                          defaultMaxNumberOfItemsToIndexInSingleBatch, 128);
+            WebDir =
+                new StringSetting(settings["Raven/WebDir"], GetDefaultWebDir);
+            PluginsDirectory =
+                new StringSetting(settings["Raven/PluginsDirectory"], @"~\Plugins");
+            AssembliesDirectory =
+                new StringSetting(settings["Raven/AssembliesDirectory"], @"~\Assemblies");
+            EmbeddedFilesDirectory =
+                new StringSetting(settings["Raven/EmbeddedFilesDirectory"], (string)null);
+            CompiledIndexCacheDirectory =
+                new StringSetting(settings["Raven/CompiledIndexCacheDirectory"], @"~\CompiledIndexCache");
+            TaskScheduler =
+                new StringSetting(settings["Raven/TaskScheduler"], (string)null);
+            AllowLocalAccessWithoutAuthorization =
+                new BooleanSetting(settings["Raven/AllowLocalAccessWithoutAuthorization"], false);
+            RejectClientsModeEnabled =
+                new BooleanSetting(settings[Constants.RejectClientsModeEnabled], false);
 
-			ClusterName = new StringSetting(settings["Raven/ClusterName"], (string)null);
-			ServerName = new StringSetting(settings["Raven/ServerName"], (string)null);
+            MaxIndexCommitPointStoreTimeInterval =
+                new TimeSpanSetting(settings["Raven/MaxIndexCommitPointStoreTimeInterval"], TimeSpan.FromMinutes(5),
+                                    TimeSpanArgumentType.FromParse);
+            MaxNumberOfStoredCommitPoints =
+                new IntegerSetting(settings["Raven/MaxNumberOfStoredCommitPoints"], 5);
+            MinIndexingTimeIntervalToStoreCommitPoint =
+                new TimeSpanSetting(settings["Raven/MinIndexingTimeIntervalToStoreCommitPoint"], TimeSpan.FromMinutes(1),
+                                    TimeSpanArgumentType.FromParse);
 
-			MaxStepsForScript = new IntegerSetting(settings["Raven/MaxStepsForScript"], 10*1000);
-			AdditionalStepsForScriptBasedOnDocumentSize = new IntegerSetting(settings["Raven/AdditionalStepsForScriptBasedOnDocumentSize"], 5);
+            TimeToWaitBeforeRunningIdleIndexes = new TimeSpanSetting(settings["Raven/TimeToWaitBeforeRunningIdleIndexes"], TimeSpan.FromMinutes(10), TimeSpanArgumentType.FromParse);
 
-			MaxRecentTouchesToRemember = new IntegerSetting(settings["Raven/MaxRecentTouchesToRemember"], 1024);
-		}
+            DatbaseOperationTimeout = new TimeSpanSetting(settings["Raven/DatabaseOperationTimeout"], TimeSpan.FromMinutes(5), TimeSpanArgumentType.FromParse);
 
-		private string GetDefaultWebDir()
-		{
-			return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"Raven/WebUI");
-		}
+            TimeToWaitBeforeMarkingAutoIndexAsIdle = new TimeSpanSetting(settings["Raven/TimeToWaitBeforeMarkingAutoIndexAsIdle"], TimeSpan.FromHours(1), TimeSpanArgumentType.FromParse);
 
-		private int GetDefaultMemoryCacheLimitMegabytes()
-		{
-			var cacheSizeMaxSetting = new IntegerSetting(settings["Raven/Esent/CacheSizeMax"], 1024);
+            TimeToWaitBeforeMarkingIdleIndexAsAbandoned = new TimeSpanSetting(settings["Raven/TimeToWaitBeforeMarkingIdleIndexAsAbandoned"], TimeSpan.FromHours(72), TimeSpanArgumentType.FromParse);
 
-			// we need to leave ( a lot ) of room for other things as well, so we min the cache size
-			var val = (MemoryStatistics.TotalPhysicalMemory/2) -
-			          // reduce the unmanaged cache size from the default min
-									cacheSizeMaxSetting.Value;
+            TimeToWaitBeforeRunningAbandonedIndexes = new TimeSpanSetting(settings["Raven/TimeToWaitBeforeRunningAbandonedIndexes"], TimeSpan.FromHours(3), TimeSpanArgumentType.FromParse);
 
-			if (val < 0)
-				return 128; // if machine has less than 1024 MB, then only use 128 MB 
+            DisableClusterDiscovery = new BooleanSetting(settings["Raven/DisableClusterDiscovery"], false);
 
-			return val;
-		}
+            TurnOffDiscoveryClient = new BooleanSetting(settings["Raven/TurnOffDiscoveryClient"], false);
 
-		public IntegerSetting MemoryLimitForIndexing { get; private set; }
+            ServerName = new StringSetting(settings["Raven/ServerName"], (string)null);
 
-		public IntegerSetting EncryptionKeyBitsPreference { get; private set; }
+            MaxStepsForScript = new IntegerSetting(settings["Raven/MaxStepsForScript"], 10 * 1000);
+            AdditionalStepsForScriptBasedOnDocumentSize = new IntegerSetting(settings["Raven/AdditionalStepsForScriptBasedOnDocumentSize"], 5);
 
-		public IntegerSettingWithMin MaxPageSize { get; private set; }
+            MaxRecentTouchesToRemember = new IntegerSetting(settings["Raven/MaxRecentTouchesToRemember"], 1024);
 
-		public IntegerSetting MemoryCacheLimitMegabytes { get; private set; }
+            Prefetcher.FetchingDocumentsFromDiskTimeoutInSeconds = new IntegerSetting(settings["Raven/Prefetcher/FetchingDocumentsFromDiskTimeout"], 5);
+            Prefetcher.MaximumSizeAllowedToFetchFromStorageInMb = new IntegerSetting(settings["Raven/Prefetcher/MaximumSizeAllowedToFetchFromStorage"], 256);
 
-		public TimeSpanSetting MemoryCacheExpiration { get; private set; }
+            Voron.MaxBufferPoolSize = new IntegerSetting(settings[Constants.Voron.MaxBufferPoolSize], 4);
+            Voron.InitialFileSize = new NullableIntegerSetting(settings[Constants.Voron.InitialFileSize], (int?)null);
+            Voron.MaxScratchBufferSize = new IntegerSetting(settings[Constants.Voron.MaxScratchBufferSize], 6144);
 
-		public IntegerSetting MemoryCacheLimitPercentage { get; private set; }
+            var maxScratchBufferSize = Voron.MaxScratchBufferSize.Value;
+            var scratchBufferSizeNotificationThreshold = -1;
+            if (maxScratchBufferSize > 1024)
+                scratchBufferSizeNotificationThreshold = 1024;
+            else if (maxScratchBufferSize > 512)
+                scratchBufferSizeNotificationThreshold = 512;
+            Voron.ScratchBufferSizeNotificationThreshold = new IntegerSetting(settings[Constants.Voron.ScratchBufferSizeNotificationThreshold], scratchBufferSizeNotificationThreshold);
 
-		public TimeSpanSetting MemoryCacheLimitCheckInterval { get; private set; }
+            Voron.AllowIncrementalBackups = new BooleanSetting(settings[Constants.Voron.AllowIncrementalBackups], false);
+            Voron.AllowOn32Bits = new BooleanSetting(settings[Constants.Voron.AllowOn32Bits], false);
+            Voron.SkipConsistencyChecks = new BooleanSetting(settings[Constants.Voron.SkipConsistencyChecks], false);
+            Voron.TempPath = new StringSetting(settings[Constants.Voron.TempPath], (string)null);
 
-		public TimeSpanSetting MaxIndexingRunLatency { get; private set; }
+            var txJournalPath = settings[Constants.RavenTxJournalPath];
+            var esentLogsPath = settings[Constants.RavenEsentLogsPath];
+
+            Voron.JournalsStoragePath = new StringSetting(string.IsNullOrEmpty(txJournalPath) ? esentLogsPath : txJournalPath, (string)null);
+
+            Esent.JournalsStoragePath = new StringSetting(string.IsNullOrEmpty(esentLogsPath) ? txJournalPath : esentLogsPath, (string)null);
+
+            var defaultCacheSize = Environment.Is64BitProcess ? Math.Min(1024, (MemoryStatistics.TotalPhysicalMemory / 4)) : 256;
+            Esent.CacheSizeMax = new IntegerSetting(settings[Constants.Esent.CacheSizeMax], defaultCacheSize);
+            Esent.MaxVerPages = new IntegerSetting(settings[Constants.Esent.MaxVerPages], 512);
+            Esent.PreferredVerPages = new IntegerSetting(settings[Constants.Esent.PreferredVerPages], 472);
+            Esent.DbExtensionSize = new IntegerSetting(settings[Constants.Esent.DbExtensionSize], 8);
+            Esent.LogFileSize = new IntegerSetting(settings[Constants.Esent.LogFileSize], 64);
+            Esent.LogBuffers = new IntegerSetting(settings[Constants.Esent.LogBuffers], 8192);
+            Esent.MaxCursors = new IntegerSetting(settings[Constants.Esent.MaxCursors], 2048);
+            Esent.CircularLog = new BooleanSetting(settings[Constants.Esent.CircularLog], true);
+
+            Replication.FetchingFromDiskTimeoutInSeconds = new IntegerSetting(settings["Raven/Replication/FetchingFromDiskTimeout"], 30);
+            Replication.ReplicationRequestTimeoutInMilliseconds = new IntegerSetting(settings["Raven/Replication/ReplicationRequestTimeout"], 60 * 1000);
+            Replication.ForceReplicationRequestBuffering = new BooleanSetting(settings["Raven/Replication/ForceReplicationRequestBuffering"], false);
+            Replication.MaxNumberOfItemsToReceiveInSingleBatch = new NullableIntegerSettingWithMin(settings["Raven/Replication/MaxNumberOfItemsToReceiveInSingleBatch"], (int?)null, 512);
+
+            FileSystem.MaximumSynchronizationInterval = new TimeSpanSetting(settings[Constants.FileSystem.MaximumSynchronizationInterval], TimeSpan.FromSeconds(60), TimeSpanArgumentType.FromParse);
+            FileSystem.IndexStoragePath = new StringSetting(settings[Constants.FileSystem.IndexStorageDirectory], string.Empty);
+            FileSystem.DataDir = new StringSetting(settings[Constants.FileSystem.DataDirectory], @"~\FileSystems");
+            FileSystem.DefaultStorageTypeName = new StringSetting(settings[Constants.FileSystem.Storage], string.Empty);
+            FileSystem.PreventSchemaUpdate = new BooleanSetting(settings[Constants.FileSystem.PreventSchemaUpdate], false);
+            Encryption.UseFips = new BooleanSetting(settings["Raven/Encryption/FIPS"], false);
+            Encryption.EncryptionKeyBitsPreference = new IntegerSetting(settings[Constants.EncryptionKeyBitsPreferenceSetting], Constants.DefaultKeySizeToUseInActualEncryptionInBits);
+            Encryption.UseSsl = new BooleanSetting(settings["Raven/UseSsl"], false);
+
+            Studio.AllowNonAdminUsersToSetupPeriodicExport = new BooleanSetting(settings[Constants.AllowNonAdminUsersToSetupPeriodicExport], false);
+
+            Indexing.MaxNumberOfItemsToProcessInTestIndexes = new IntegerSetting(settings[Constants.MaxNumberOfItemsToProcessInTestIndexes], 512);
+            Indexing.DisableIndexingFreeSpaceThreshold = new IntegerSetting(settings[Constants.Indexing.DisableIndexingFreeSpaceThreshold], 2048);
+            Indexing.DisableMapReduceInMemoryTracking = new BooleanSetting(settings[Constants.Indexing.DisableMapReduceInMemoryTracking], false);
+            Indexing.SkipRecoveryOnStartup = new BooleanSetting(settings[Constants.Indexing.SkipRecoveryOnStartup], false);
+
+            DefaultStorageTypeName = new StringSetting(settings["Raven/StorageTypeName"] ?? settings["Raven/StorageEngine"], string.Empty);
+
+            FlushIndexToDiskSizeInMb = new IntegerSetting(settings["Raven/Indexing/FlushIndexToDiskSizeInMb"], 5);
+
+            TombstoneRetentionTime = new TimeSpanSetting(settings["Raven/TombstoneRetentionTime"], TimeSpan.FromDays(14), TimeSpanArgumentType.FromParse);
+
+            ImplicitFetchFieldsFromDocumentMode = new EnumSetting<ImplicitFetchFieldsMode>(settings["Raven/ImplicitFetchFieldsFromDocumentMode"], ImplicitFetchFieldsMode.Enabled);
+
+            if (settings["Raven/MaxServicePointIdleTime"] != null)
+                ServicePointManager.MaxServicePointIdleTime = Convert.ToInt32(settings["Raven/MaxServicePointIdleTime"]);
+
+            WebSockets.InitialBufferPoolSize = new IntegerSetting(settings["Raven/WebSockets/InitialBufferPoolSize"], 128 * 1024);
+
+            MaxConcurrentResourceLoads = new IntegerSetting(settings[Constants.RavenMaxConcurrentResourceLoads], 8);
+            ConcurrentResourceLoadTimeout = new TimeSpanSetting(settings[Constants.ConcurrentResourceLoadTimeout],
+                TimeSpan.FromSeconds(15),
+                TimeSpanArgumentType.FromParse);
+
+            CacheDocumentsInMemory = new BooleanSetting(settings["Raven/CacheDocumentsInMemory"], true);
+        }
+
+        public IntegerSettingWithMin MinThreadPoolWorkerThreads { get; set; }
+
+        public IntegerSettingWithMin MinThreadPoolCompletionThreads { get; set; }
+
+        private string GetDefaultWebDir()
+        {
+            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"Raven/WebUI");
+        }
+
+        private int GetDefaultMemoryCacheLimitMegabytes()
+        {
+            var cacheSizeMaxSetting = new IntegerSetting(settings[Constants.Esent.CacheSizeMax], 1024);
+
+            // we need to leave ( a lot ) of room for other things as well, so we min the cache size
+            var val = (MemoryStatistics.TotalPhysicalMemory / 2) -
+                                    // reduce the unmanaged cache size from the default min
+                                    cacheSizeMaxSetting.Value;
+
+            if (val < 0)
+                return 128; // if machine has less than 1024 MB, then only use 128 MB 
+
+            return val;
+        }
+
+        public IntegerSetting MaxPrecomputedBatchTotalDocumentSizeInBytes { get; private set; }
+
+        public IntegerSetting MaxPrecomputedBatchSizeForNewIndex { get; private set; }
+
+        public BooleanSetting CacheDocumentsInMemory { get; set; }
+
+
+        public IntegerSetting MaxConcurrentResourceLoads { get; private set; }
+
+        public TimeSpanSetting ConcurrentResourceLoadTimeout { get; private set; }
+
+        public IntegerSetting MaxClauseCount { get; private set; }
+        public BooleanSetting AllowScriptsToAdjustNumberOfSteps { get; private set; }
+
+        public IntegerSetting IndexAndTransformerReplicationLatencyInSec { get; private set; }
+
+        public IntegerSetting MemoryLimitForProcessing { get; private set; }
+
+        public IntegerSetting MaxConcurrentServerRequests { get; private set; }
+
+        public IntegerSetting MaxConcurrentRequestsForDatabaseDuringLoad { get; private set; }
+
+        public IntegerSetting MaxSecondsForTaskToWaitForDatabaseToLoad { get; set; }
+
+        public IntegerSetting MaxConcurrentMultiGetRequests { get; private set; }
+
+        public IntegerSetting PrefetchingDurationLimit { get; private set; }
+
+        public TimeSpanSetting BulkImportBatchTimeout { get; private set; }
+
+        public IntegerSettingWithMin MaxPageSize { get; private set; }
+
+        public IntegerSetting MemoryCacheLimitMegabytes { get; private set; }
+
+        public TimeSpanSetting MemoryCacheExpiration { get; private set; }
+
+        public IntegerSetting MemoryCacheLimitPercentage { get; private set; }
+
+        public TimeSpanSetting MemoryCacheLimitCheckInterval { get; private set; }
+
+        public TimeSpanSetting MaxProcessingRunLatency { get; private set; }
 
         public TimeSpanSetting PrewarmFacetsOnIndexingMaxAge { get; private set; }
 
         public TimeSpanSetting PrewarmFacetsSyncronousWaitTime { get; private set; }
 
-        public IntegerSettingWithMin MaxNumberOfItemsToIndexInSingleBatch { get; private set; }
+        public IntegerSettingWithMin MaxNumberOfItemsToProcessInSingleBatch { get; private set; }
 
-		public IntegerSetting AvailableMemoryForRaisingIndexBatchSizeLimit { get; private set; }
+        public IntegerSetting AvailableMemoryForRaisingBatchSizeLimit { get; private set; }
 
-		public IntegerSettingWithMin MaxNumberOfItemsToReduceInSingleBatch { get; private set; }
+        public IntegerSettingWithMin MaxNumberOfItemsToReduceInSingleBatch { get; private set; }
 
-		public IntegerSetting NumberOfItemsToExecuteReduceInSingleStep { get; private set; }
+        public IntegerSetting NumberOfItemsToExecuteReduceInSingleStep { get; private set; }
 
-		public IntegerSettingWithMin MaxNumberOfParallelIndexTasks { get; private set; }
+        public IntegerSettingWithMin MaxNumberOfParallelProcessingTasks { get; private set; }
 
-		public MultipliedIntegerSetting NewIndexInMemoryMaxMb { get; private set; }
+        public MultipliedIntegerSetting NewIndexInMemoryMaxMb { get; private set; }
 
-		public BooleanSetting RunInMemory { get; private set; }
+        public TimeSpanSetting NewIndexInMemoryMaxTime { get; private set; }
 
-		public BooleanSetting CreateAutoIndexesForAdHocQueriesIfNeeded { get; private set; }
+        public BooleanSetting RunInMemory { get; private set; }
 
-		public BooleanSetting ResetIndexOnUncleanShutdown { get; private set; }
+        public BooleanSetting CreateAutoIndexesForAdHocQueriesIfNeeded { get; private set; }
 
-		public BooleanSetting DisableInMemoryIndexing { get; private set; }
+        public BooleanSetting ResetIndexOnUncleanShutdown { get; private set; }
 
-		public StringSetting DataDir { get; private set; }
+        public BooleanSetting DisableInMemoryIndexing { get; private set; }
 
-		public StringSetting IndexStoragePath { get; private set; }
+        public StringSetting WorkingDir { get; private set; }
 
-		public StringSetting HostName { get; private set; }
+        public StringSetting DataDir { get; private set; }
 
-		public StringSetting Port { get; private set; }
+        public StringSetting IndexStoragePath { get; private set; }
 
-		public StringSetting SslCertificatePath { get; private set; }
+        public StringSetting CountersDataDir { get; private set; }
 
-		public StringSetting SslCertificatePassword { get; private set; }
+        public StringSetting HostName { get; private set; }
 
-		public BooleanSetting UseSsl { get; private set; }
+        public StringSetting Port { get; private set; }
 
-		public BooleanSetting HttpCompression { get; private set; }
+        public StringSetting ExposeConfigOverTheWire { get; set; }
 
-		public StringSetting AccessControlAllowOrigin { get; private set; }
+        public BooleanSetting HttpCompression { get; private set; }
 
-		public StringSetting AccessControlMaxAge { get; private set; }
+        public StringSetting AccessControlAllowOrigin { get; private set; }
 
-		public StringSetting AccessControlAllowMethods { get; private set; }
+        public StringSetting AccessControlMaxAge { get; private set; }
 
-		public StringSetting AccessControlRequestHeaders { get; private set; }
+        public StringSetting AccessControlAllowMethods { get; private set; }
 
-		public StringSetting RedirectStudioUrl { get; private set; }
+        public StringSetting AccessControlRequestHeaders { get; private set; }
 
-		public BooleanSetting DisableDocumentPreFetchingForIndexing { get; private set; }
+        public StringSetting RedirectStudioUrl { get; private set; }
 
-		public IntegerSettingWithMin MaxNumberOfItemsToPreFetchForIndexing { get; private set; }
+        public BooleanSetting DisableDocumentPreFetching { get; private set; }
 
-		public StringSetting WebDir { get; private set; }
+        public IntegerSettingWithMin MaxNumberOfItemsToPreFetch { get; private set; }
 
-		public BooleanSetting DisableClusterDiscovery { get; private set; }
+        public StringSetting WebDir { get; private set; }
 
-		public StringSetting ClusterName { get; private set; }
+        public BooleanSetting DisableClusterDiscovery { get; private set; }
+        public BooleanSetting TurnOffDiscoveryClient { get; private set; }
 
-		public StringSetting ServerName { get; private set; }
+        public StringSetting ServerName { get; private set; }
 
-		public StringSetting PluginsDirectory { get; private set; }
+        public StringSetting PluginsDirectory { get; private set; }
 
-		public StringSetting CompiledIndexCacheDirectory { get; private set; }
+        public StringSetting CompiledIndexCacheDirectory { get; private set; }
 
-		public StringSetting TaskScheduler { get; private set; }
+        public StringSetting AssembliesDirectory { get; private set; }
 
-		public BooleanSetting AllowLocalAccessWithoutAuthorization { get; private set; }
+        public StringSetting EmbeddedFilesDirectory { get; private set; }
 
-		public TimeSpanSetting MaxIndexCommitPointStoreTimeInterval { get; private set; }
+        public StringSetting TaskScheduler { get; private set; }
 
-		public TimeSpanSetting MinIndexingTimeIntervalToStoreCommitPoint { get; private set; }
+        public BooleanSetting AllowLocalAccessWithoutAuthorization { get; private set; }
 
-		public IntegerSetting MaxNumberOfStoredCommitPoints { get; private set; }
+
+        public BooleanSetting RejectClientsModeEnabled { get; private set; }
+
+        public TimeSpanSetting MaxIndexCommitPointStoreTimeInterval { get; private set; }
+
+        public TimeSpanSetting MinIndexingTimeIntervalToStoreCommitPoint { get; private set; }
+
+        public IntegerSetting MaxNumberOfStoredCommitPoints { get; private set; }
         public TimeSpanSetting TimeToWaitBeforeRunningIdleIndexes { get; private set; }
 
-	    public TimeSpanSetting TimeToWaitBeforeMarkingAutoIndexAsIdle { get; private set; }
+        public TimeSpanSetting TimeToWaitBeforeMarkingAutoIndexAsIdle { get; private set; }
 
-		public TimeSpanSetting TimeToWaitBeforeMarkingIdleIndexAsAbandoned { get; private set; }
+        public TimeSpanSetting TimeToWaitBeforeMarkingIdleIndexAsAbandoned { get; private set; }
 
-		public TimeSpanSetting TimeToWaitBeforeRunningAbandonedIndexes { get; private set; }
-		
-		public IntegerSetting MaxStepsForScript { get; private set; }
+        public TimeSpanSetting TimeToWaitBeforeRunningAbandonedIndexes { get; private set; }
 
-		public IntegerSetting AdditionalStepsForScriptBasedOnDocumentSize { get; private set; }
+        public IntegerSetting MaxStepsForScript { get; private set; }
 
-		public IntegerSetting MaxIndexWritesBeforeRecreate { get; private set; }
+        public IntegerSetting AdditionalStepsForScriptBasedOnDocumentSize { get; private set; }
 
-		public BooleanSetting PreventAutomaticSuggestionCreation { get; set; }
-    
-        public BooleanSetting DisablePerformanceCounters { get; set; }
-		public TimeSpanSetting DatbaseOperationTimeout { get; private set; }
+        public IntegerSetting MaxIndexWritesBeforeRecreate { get; private set; }
 
-		public IntegerSetting MaxRecentTouchesToRemember { get; set; }
-	}
+        public IntegerSetting MaxSimpleIndexOutputsPerDocument { get; private set; }
+
+        public IntegerSetting MaxMapReduceIndexOutputsPerDocument { get; private set; }
+
+        public TimeSpanSetting DatbaseOperationTimeout { get; private set; }
+
+        public IntegerSetting MaxRecentTouchesToRemember { get; private set; }
+
+        public StringSetting DefaultStorageTypeName { get; private set; }
+
+        public IntegerSetting FlushIndexToDiskSizeInMb { get; set; }
+
+        public TimeSpanSetting TombstoneRetentionTime { get; private set; }
+
+        public EnumSetting<ImplicitFetchFieldsMode> ImplicitFetchFieldsFromDocumentMode { get; private set; }
+
+        public class VoronConfiguration
+        {
+            public IntegerSetting MaxBufferPoolSize { get; set; }
+
+            public NullableIntegerSetting InitialFileSize { get; set; }
+
+            public IntegerSetting MaxScratchBufferSize { get; set; }
+
+            public IntegerSetting ScratchBufferSizeNotificationThreshold { get; set; }
+
+            public BooleanSetting AllowIncrementalBackups { get; set; }
+
+            public StringSetting TempPath { get; set; }
+
+            public StringSetting JournalsStoragePath { get; set; }
+
+            public BooleanSetting AllowOn32Bits { get; set; }
+
+            public BooleanSetting SkipConsistencyChecks { get; set; }
+
+        }
+
+        public class EsentConfiguration
+        {
+            public StringSetting JournalsStoragePath { get; set; }
+
+            public IntegerSetting CacheSizeMax { get; set; }
+
+            public IntegerSetting MaxVerPages { get; set; }
+
+            public IntegerSetting PreferredVerPages { get; set; }
+
+            public IntegerSetting DbExtensionSize { get; set; }
+
+            public IntegerSetting LogFileSize { get; set; }
+
+            public IntegerSetting LogBuffers { get; set; }
+
+            public IntegerSetting MaxCursors { get; set; }
+
+            public BooleanSetting CircularLog { get; set; }
+        }
+
+        public class IndexingConfiguration
+        {
+            public IntegerSetting MaxNumberOfItemsToProcessInTestIndexes { get; set; }
+
+            public IntegerSetting DisableIndexingFreeSpaceThreshold { get; set; }
+            public BooleanSetting DisableMapReduceInMemoryTracking { get; set; }
+            public BooleanSetting SkipRecoveryOnStartup { get; set; }
+        }
+
+        public class PrefetcherConfiguration
+        {
+            public IntegerSetting FetchingDocumentsFromDiskTimeoutInSeconds { get; set; }
+
+            public IntegerSetting MaximumSizeAllowedToFetchFromStorageInMb { get; set; }
+        }
+
+        public class ReplicationConfiguration
+        {
+            public IntegerSetting FetchingFromDiskTimeoutInSeconds { get; set; }
+
+
+            public BooleanSetting ForceReplicationRequestBuffering { get; set; }
+
+            public IntegerSetting ReplicationRequestTimeoutInMilliseconds { get; set; }
+
+            public NullableIntegerSettingWithMin MaxNumberOfItemsToReceiveInSingleBatch { get; set; }
+        }
+
+        public class FileSystemConfiguration
+        {
+            public TimeSpanSetting MaximumSynchronizationInterval { get; set; }
+
+            public StringSetting DataDir { get; set; }
+
+            public StringSetting IndexStoragePath { get; set; }
+
+            public StringSetting DefaultStorageTypeName { get; set; }
+
+            public BooleanSetting PreventSchemaUpdate { get; set; }
+        }
+
+        public class StudioConfiguration
+        {
+            public BooleanSetting AllowNonAdminUsersToSetupPeriodicExport { get; set; }
+        }
+
+        public class EncryptionConfiguration
+        {
+            public BooleanSetting UseFips { get; set; }
+
+            public IntegerSetting EncryptionKeyBitsPreference { get; set; }
+
+            public BooleanSetting UseSsl { get; set; }
+        }
+
+        public class WebSocketsConfiguration
+        {
+            public IntegerSetting InitialBufferPoolSize { get; set; }
+        }
+    }
+
+    public enum ImplicitFetchFieldsMode
+    {
+        Enabled,
+        DoNothing,
+        Exception
+    }
 }

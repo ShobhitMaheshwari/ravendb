@@ -1,10 +1,11 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 //  <copyright file="From45To46.cs" company="Hibernating Rhinos LTD">
 //      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 //  </copyright>
 // -----------------------------------------------------------------------
 using System;
 using Microsoft.Isam.Esent.Interop;
+using Raven.Database.Config;
 using Raven.Database.Impl;
 using BitConverter = System.BitConverter;
 
@@ -14,11 +15,11 @@ namespace Raven.Storage.Esent.SchemaUpdates.Updates
     {
         public string FromSchemaVersion { get { return "4.5"; } }
         
-        public void Init(IUuidGenerator generator)
+        public void Init(IUuidGenerator generator, InMemoryRavenConfiguration configuration)
         {
         }
 
-		public void Update(Session session, JET_DBID dbid, Action<string> output)
+        public void Update(Session session, JET_DBID dbid, Action<string> output)
         {
             using (var table = new Table(session, dbid, "indexes_stats", OpenTableGrbit.None))
             {
@@ -30,20 +31,20 @@ namespace Raven.Storage.Esent.SchemaUpdates.Updates
                     grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL
                 }, defaultValue, defaultValue.Length, out columnid);
 
-				defaultValue = BitConverter.GetBytes(0);
-				Api.JetAddColumn(session, table, "created_timestamp", new JET_COLUMNDEF
+                defaultValue = BitConverter.GetBytes(0);
+                Api.JetAddColumn(session, table, "created_timestamp", new JET_COLUMNDEF
                 {
                     cbMax = 8, //64 bits
                     coltyp = JET_coltyp.Binary,
                     grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL
-				}, defaultValue, defaultValue.Length, out columnid);
+                }, defaultValue, defaultValue.Length, out columnid);
 
-				Api.JetAddColumn(session, table, "last_indexing_time", new JET_COLUMNDEF
-				{
-					cbMax = 8, //64 bits
-					coltyp = JET_coltyp.Binary,
-					grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL
-				}, defaultValue, defaultValue.Length, out columnid);
+                Api.JetAddColumn(session, table, "last_indexing_time", new JET_COLUMNDEF
+                {
+                    cbMax = 8, //64 bits
+                    coltyp = JET_coltyp.Binary,
+                    grbit = ColumndefGrbit.ColumnFixed | ColumndefGrbit.ColumnNotNULL
+                }, defaultValue, defaultValue.Length, out columnid);
             }
 
             SchemaCreator.UpdateVersion(session,   dbid, "4.6");

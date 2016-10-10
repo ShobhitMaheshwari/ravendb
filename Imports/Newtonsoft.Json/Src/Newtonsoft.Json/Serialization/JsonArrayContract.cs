@@ -25,6 +25,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Globalization;
 using System.Reflection;
 using Raven.Imports.Newtonsoft.Json.Utilities;
 using System.Collections;
@@ -32,139 +35,228 @@ using System.Collections;
 using Raven.Imports.Newtonsoft.Json.Utilities.LinqBridge;
 #else
 using System.Linq;
+
 #endif
 
 namespace Raven.Imports.Newtonsoft.Json.Serialization
 {
-  /// <summary>
-  /// Contract details for a <see cref="Type"/> used by the <see cref="JsonSerializer"/>.
-  /// </summary>
-  public class JsonArrayContract : JsonContainerContract
-  {
     /// <summary>
-    /// Gets the <see cref="Type"/> of the collection items.
+    /// Contract details for a <see cref="Type"/> used by the <see cref="JsonSerializer"/>.
     /// </summary>
-    /// <value>The <see cref="Type"/> of the collection items.</value>
-    public Type CollectionItemType { get; private set; }
-
-    /// <summary>
-    /// Gets a value indicating whether the collection type is a multidimensional array.
-    /// </summary>
-    /// <value><c>true</c> if the collection type is a multidimensional array; otherwise, <c>false</c>.</value>
-    public bool IsMultidimensionalArray { get; private set; }
-
-    private readonly bool _isCollectionItemTypeNullableType;
-    private readonly Type _genericCollectionDefinitionType;
-    private Type _genericWrapperType;
-    private MethodCall<object, object> _genericWrapperCreator;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="JsonArrayContract"/> class.
-    /// </summary>
-    /// <param name="underlyingType">The underlying type for the contract.</param>
-    public JsonArrayContract(Type underlyingType)
-      : base(underlyingType)
+    public class JsonArrayContract : JsonContainerContract
     {
-      ContractType = JsonContractType.Array;
-      
-      if (ReflectionUtils.ImplementsGenericDefinition(underlyingType, typeof(ICollection<>), out _genericCollectionDefinitionType))
-      {
-        CollectionItemType = _genericCollectionDefinitionType.GetGenericArguments()[0];
-      }
-      else if (underlyingType.IsGenericType() && underlyingType.GetGenericTypeDefinition() == typeof(IEnumerable<>))
-      {
-        _genericCollectionDefinitionType =  typeof (IEnumerable<>);
-        CollectionItemType = underlyingType.GetGenericArguments()[0];
-      }
-      else
-      {
-        CollectionItemType = ReflectionUtils.GetCollectionItemType(UnderlyingType);
-      }
+        /// <summary>
+        /// Gets the <see cref="Type"/> of the collection items.
+        /// </summary>
+        /// <value>The <see cref="Type"/> of the collection items.</value>
+        public Type CollectionItemType { get; private set; }
 
-      if (CollectionItemType != null)
-        _isCollectionItemTypeNullableType = ReflectionUtils.IsNullableType(CollectionItemType);
+        /// <summary>
+        /// Gets a value indicating whether the collection type is a multidimensional array.
+        /// </summary>
+        /// <value><c>true</c> if the collection type is a multidimensional array; otherwise, <c>false</c>.</value>
+        public bool IsMultidimensionalArray { get; private set; }
 
-      if (IsTypeGenericCollectionInterface(UnderlyingType))
-        CreatedType = ReflectionUtils.MakeGenericType(typeof(List<>), CollectionItemType);
-#if !(PORTABLE || NET20 || NET35 || WINDOWS_PHONE)
-      else if (IsTypeGenericSetnterface(UnderlyingType))
-        CreatedType = ReflectionUtils.MakeGenericType(typeof(HashSet<>), CollectionItemType);
-#endif
+        private readonly Type _genericCollectionDefinitionType;
 
-      IsMultidimensionalArray = (UnderlyingType.IsArray && UnderlyingType.GetArrayRank() > 1);
-    }
+        private Type _genericWrapperType;
+        private ObjectConstructor<object> _genericWrapperCreator;
+        private Func<object> _genericTemporaryCollectionCreator;
 
-    internal IWrappedCollection CreateWrapper(object list)
-    {
-      if ((list is IList && (CollectionItemType == null || !_isCollectionItemTypeNullableType))
-        || UnderlyingType.IsArray)
-        return new CollectionWrapper<object>((IList)list);
+        internal bool IsArray { get; private set; }
+        internal bool ShouldCreateWrapper { get; private set; }
+        internal bool CanDeserialize { get; private set; }
 
-      if (_genericCollectionDefinitionType != null)
-      {
-        EnsureGenericWrapperCreator();
-        return (IWrappedCollection) _genericWrapperCreator(null, list);
-      }
-      else
-      {
-        IList values = ((IEnumerable) list).Cast<object>().ToList();
+        private readonly ConstructorInfo _parametrizedConstructor;
 
-        if (CollectionItemType != null)
+        private ObjectConstructor<object> _parametrizedCreator;
+        internal ObjectConstructor<object> ParametrizedCreator
         {
-          Array array = Array.CreateInstance(CollectionItemType, values.Count);
-          for (int i = 0; i < values.Count; i++)
-          {
-            array.SetValue(values[i], i);
-          }
+            get
+            {
+                if (_parametrizedCreator == null)
+                    _parametrizedCreator = JsonTypeReflector.ReflectionDelegateFactory.CreateParametrizedConstructor(_parametrizedConstructor);
 
-          values = array;
+                return _parametrizedCreator;
+            }
         }
 
-        return new CollectionWrapper<object>(values);
-      }
-    }
+        internal bool HasParametrizedCreator
+        {
+            get { return _parametrizedCreator != null || _parametrizedConstructor != null; }
+        }
 
-    private void EnsureGenericWrapperCreator()
-    {
-      if (_genericWrapperCreator == null)
-      {
-        _genericWrapperType = ReflectionUtils.MakeGenericType(typeof (CollectionWrapper<>), CollectionItemType);
+        /// <summary>
+        /// Initializes a new instance of the <see cref="JsonArrayContract"/> class.
+        /// </summary>
+        /// <param name="underlyingType">The underlying type for the contract.</param>
+        public JsonArrayContract(Type underlyingType)
+            : base(underlyingType)
+        {
+            ContractType = JsonContractType.Array;
+            IsArray = CreatedType.IsArray;
 
-        Type constructorArgument;
+            bool canDeserialize;
 
-        if (ReflectionUtils.InheritsGenericDefinition(_genericCollectionDefinitionType, typeof(List<>))
-          || _genericCollectionDefinitionType.GetGenericTypeDefinition() == typeof(IEnumerable<>))
-          constructorArgument = ReflectionUtils.MakeGenericType(typeof(ICollection<>), CollectionItemType);
-        else
-          constructorArgument = _genericCollectionDefinitionType;
+            Type tempCollectionType;
+            if (IsArray)
+            {
+                CollectionItemType = ReflectionUtils.GetCollectionItemType(UnderlyingType);
+                IsReadOnlyOrFixedSize = true;
+                _genericCollectionDefinitionType = typeof(List<>).MakeGenericType(CollectionItemType);
 
-        ConstructorInfo genericWrapperConstructor = _genericWrapperType.GetConstructor(new[] { constructorArgument });
-        _genericWrapperCreator = JsonTypeReflector.ReflectionDelegateFactory.CreateMethodCall<object>(genericWrapperConstructor);
-      }
-    }
+                canDeserialize = true;
+                IsMultidimensionalArray = (IsArray && UnderlyingType.GetArrayRank() > 1);
+            }
+            else if (typeof(IList).IsAssignableFrom(underlyingType))
+            {
+                if (ReflectionUtils.ImplementsGenericDefinition(underlyingType, typeof(ICollection<>), out _genericCollectionDefinitionType))
+                    CollectionItemType = _genericCollectionDefinitionType.GetGenericArguments()[0];
+                else
+                    CollectionItemType = ReflectionUtils.GetCollectionItemType(underlyingType);
 
-    private bool IsTypeGenericCollectionInterface(Type type)
-    {
-      if (!type.IsGenericType())
-        return false;
+                if (underlyingType == typeof(IList))
+                    CreatedType = typeof(List<object>);
 
-      Type genericDefinition = type.GetGenericTypeDefinition();
+                if (CollectionItemType != null)
+                    _parametrizedConstructor = CollectionUtils.ResolveEnumerableCollectionConstructor(underlyingType, CollectionItemType);
 
-      return (genericDefinition == typeof(IList<>)
-              || genericDefinition == typeof(ICollection<>)
-              || genericDefinition == typeof(IEnumerable<>));
-    }
+                IsReadOnlyOrFixedSize = ReflectionUtils.InheritsGenericDefinition(underlyingType, typeof(ReadOnlyCollection<>));
+                canDeserialize = true;
+            }
+            else if (ReflectionUtils.ImplementsGenericDefinition(underlyingType, typeof(ICollection<>), out _genericCollectionDefinitionType))
+            {
+                CollectionItemType = _genericCollectionDefinitionType.GetGenericArguments()[0];
 
-#if !(PORTABLE || NET20 || NET35 || WINDOWS_PHONE)
-    private bool IsTypeGenericSetnterface(Type type)
-    {
-      if (!type.IsGenericType())
-        return false;
+                if (ReflectionUtils.IsGenericDefinition(underlyingType, typeof(ICollection<>))
+                    || ReflectionUtils.IsGenericDefinition(underlyingType, typeof(IList<>)))
+                    CreatedType = typeof(List<>).MakeGenericType(CollectionItemType);
 
-      Type genericDefinition = type.GetGenericTypeDefinition();
-
-      return (genericDefinition == typeof(ISet<>));
-    }
+#if !(NET20 || NET35 || PORTABLE40)
+                if (ReflectionUtils.IsGenericDefinition(underlyingType, typeof(ISet<>)))
+                    CreatedType = typeof(HashSet<>).MakeGenericType(CollectionItemType);
 #endif
-  }
+
+                _parametrizedConstructor = CollectionUtils.ResolveEnumerableCollectionConstructor(underlyingType, CollectionItemType);
+                canDeserialize = true;
+                ShouldCreateWrapper = true;
+            }
+#if !(NET40 || NET35 || NET20 || PORTABLE40)
+            else if (ReflectionUtils.ImplementsGenericDefinition(underlyingType, typeof(IReadOnlyCollection<>), out tempCollectionType))
+            {
+                CollectionItemType = tempCollectionType.GetGenericArguments()[0];
+
+                if (ReflectionUtils.IsGenericDefinition(underlyingType, typeof(IReadOnlyCollection<>))
+                    || ReflectionUtils.IsGenericDefinition(underlyingType, typeof(IReadOnlyList<>)))
+                    CreatedType = typeof(ReadOnlyCollection<>).MakeGenericType(CollectionItemType);
+
+                _genericCollectionDefinitionType = typeof(List<>).MakeGenericType(CollectionItemType);
+                _parametrizedConstructor = CollectionUtils.ResolveEnumerableCollectionConstructor(CreatedType, CollectionItemType);
+                IsReadOnlyOrFixedSize = true;
+                canDeserialize = HasParametrizedCreator;
+            }
+#endif
+            else if (ReflectionUtils.ImplementsGenericDefinition(underlyingType, typeof(IEnumerable<>), out tempCollectionType))
+            {
+                CollectionItemType = tempCollectionType.GetGenericArguments()[0];
+
+                if (ReflectionUtils.IsGenericDefinition(UnderlyingType, typeof(IEnumerable<>)))
+                    CreatedType = typeof(List<>).MakeGenericType(CollectionItemType);
+
+                _parametrizedConstructor = CollectionUtils.ResolveEnumerableCollectionConstructor(underlyingType, CollectionItemType);
+
+#if !(NET35 || NET20 || NETFX_CORE)
+                if (!HasParametrizedCreator && underlyingType.Name == FSharpUtils.FSharpListTypeName)
+                {
+                    FSharpUtils.EnsureInitialized(underlyingType.Assembly());
+                    _parametrizedCreator = FSharpUtils.CreateSeq(CollectionItemType);
+                }
+#endif
+
+                if (underlyingType.IsGenericType() && underlyingType.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+                {
+                    _genericCollectionDefinitionType = tempCollectionType;
+
+                    IsReadOnlyOrFixedSize = false;
+                    ShouldCreateWrapper = false;
+                    canDeserialize = true;
+                }
+                else
+                {
+                    _genericCollectionDefinitionType = typeof(List<>).MakeGenericType(CollectionItemType);
+
+                    IsReadOnlyOrFixedSize = true;
+                    ShouldCreateWrapper = true;
+                    canDeserialize = HasParametrizedCreator;
+                }
+            }
+            else
+            {
+                // types that implement IEnumerable and nothing else
+                canDeserialize = false;
+                ShouldCreateWrapper = true;
+            }
+
+            CanDeserialize = canDeserialize;
+
+#if (NET20 || NET35)
+            if (CollectionItemType != null && ReflectionUtils.IsNullableType(CollectionItemType))
+            {
+                // bug in .NET 2.0 & 3.5 that List<Nullable<T>> throws an error when adding null via IList.Add(object)
+                // wrapper will handle calling Add(T) instead
+                if (ReflectionUtils.InheritsGenericDefinition(CreatedType, typeof(List<>), out tempCollectionType)
+                    || (IsArray && !IsMultidimensionalArray))
+                {
+                    ShouldCreateWrapper = true;
+                }
+            }
+#endif
+
+#if !(NET20 || NET35 || NET40 || PORTABLE40)
+            Type immutableCreatedType;
+            ObjectConstructor<object> immutableParameterizedCreator;
+            if (ImmutableCollectionsUtils.TryBuildImmutableForArrayContract(underlyingType, CollectionItemType, out immutableCreatedType, out immutableParameterizedCreator))
+            {
+                CreatedType = immutableCreatedType;
+                _parametrizedCreator = immutableParameterizedCreator;
+                IsReadOnlyOrFixedSize = true;
+                CanDeserialize = true;
+            }
+#endif
+        }
+
+        internal IWrappedCollection CreateWrapper(object list)
+        {
+            if (_genericWrapperCreator == null)
+            {
+                _genericWrapperType = typeof(CollectionWrapper<>).MakeGenericType(CollectionItemType);
+
+                Type constructorArgument;
+
+                if (ReflectionUtils.InheritsGenericDefinition(_genericCollectionDefinitionType, typeof(List<>))
+                    || _genericCollectionDefinitionType.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+                    constructorArgument = typeof(ICollection<>).MakeGenericType(CollectionItemType);
+                else
+                    constructorArgument = _genericCollectionDefinitionType;
+
+                ConstructorInfo genericWrapperConstructor = _genericWrapperType.GetConstructor(new[] { constructorArgument });
+                _genericWrapperCreator = JsonTypeReflector.ReflectionDelegateFactory.CreateParametrizedConstructor(genericWrapperConstructor);
+            }
+
+            return (IWrappedCollection)_genericWrapperCreator(list);
+        }
+
+        internal IList CreateTemporaryCollection()
+        {
+            if (_genericTemporaryCollectionCreator == null)
+            {
+                // multidimensional array will also have array instances in it
+                Type collectionItemType = (IsMultidimensionalArray) ? typeof(object) : CollectionItemType;
+                Type temporaryListType = typeof(List<>).MakeGenericType(collectionItemType);
+                _genericTemporaryCollectionCreator = JsonTypeReflector.ReflectionDelegateFactory.CreateDefaultConstructor<object>(temporaryListType);
+            }
+
+            return (IList)_genericTemporaryCollectionCreator();
+        }
+    }
 }

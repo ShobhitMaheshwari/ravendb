@@ -1,512 +1,362 @@
-﻿//-----------------------------------------------------------------------
+//-----------------------------------------------------------------------
 // <copyright file="ScriptedJsonPatcher.cs" company="Hibernating Rhinos LTD">
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
-using System.Linq;
 using System.Reflection;
 using System.Runtime.Serialization;
 using System.Text;
 using Jint;
 using Jint.Native;
+using Jint.Parser;
+using Jint.Runtime;
+using Jint.Runtime.Environments;
+
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
-using Raven.Imports.Newtonsoft.Json.Linq;
 using Raven.Json.Linq;
 
 namespace Raven.Database.Json
 {
-	public class ScriptedJsonPatcher
-	{
-		private static readonly ScriptsCache scriptsCache = new ScriptsCache();
-		private readonly Func<string, RavenJObject> loadDocument;
+    internal class ScriptedJsonPatcher
+    {
+        public enum OperationType
+        {
+            None,
+            Put,
+            Delete
+        }
 
-		[ThreadStatic]
-		private static Func<string, RavenJObject> loadDocumentStatic;
+        public class Operation
+        {
+            public OperationType Type { get; set; }
+            public string DocumentKey { get; set; }
+            public JsonDocument Document { get; set; }
+        }
 
-		public List<string> Debug = new List<string>();
-		public IList<JsonDocument> CreatedDocs = new List<JsonDocument>();
-		private readonly int maxSteps;
-		private readonly int additionalStepsPerSize;
+        private static readonly ScriptsCache ScriptsCache = new ScriptsCache();
 
-		private readonly Dictionary<JsInstance, KeyValuePair<RavenJValue, object>> propertiesByValue = new Dictionary<JsInstance, KeyValuePair<RavenJValue, object>>();
+        public List<string> Debug = new List<string>();
+        private readonly int maxSteps;
+        private readonly int additionalStepsPerSize;
 
-		public ScriptedJsonPatcher(DocumentDatabase database = null)
-		{
-			if (database == null)
-			{
-				maxSteps = 10 * 1000;
-				additionalStepsPerSize = 5;
-				loadDocument = (s =>
-				{
-					throw new InvalidOperationException(
-						"Cannot load by id without database context");
-				});
-			}
-			else
-			{
-				maxSteps = database.Configuration.MaxStepsForScript;
-				additionalStepsPerSize = database.Configuration.AdditionalStepsForScriptBasedOnDocumentSize;
-				loadDocument = id =>
-				{
-					var jsonDocument = database.Get(id, null);
-					return jsonDocument == null ? null : jsonDocument.ToJson();
-				};
-			}
-		}
+        private int totalScriptSteps;
+        private readonly DocumentDatabase database;
+        private const int MaxRecursionDepth = 128;
 
-		public RavenJObject Apply(RavenJObject document, ScriptedPatchRequest patch, int size = 0, string docId = null)
-		{
-			if (document == null)
-				return null;
+        public ScriptedJsonPatcher(DocumentDatabase database = null)
+        {
+            this.database = database;
+            if (database == null)
+            {
+                maxSteps = 10 * 1000;
+                additionalStepsPerSize = 5;
+            }
+            else
+            {
+                maxSteps = database.Configuration.MaxStepsForScript;
+                additionalStepsPerSize = database.Configuration.AdditionalStepsForScriptBasedOnDocumentSize;
+            }
 
-			if (String.IsNullOrEmpty(patch.Script))
-				throw new InvalidOperationException("Patch script must be non-null and not empty");
+            totalScriptSteps = maxSteps;
+        }
 
-			var resultDocument = ApplySingleScript(document, patch, size, docId);
-			if (resultDocument != null)
-				document = resultDocument;
-			return document;
-		}
+        public int TotalScriptSteps
+        {
+            get { return totalScriptSteps; }
+        }
 
-		private RavenJObject ApplySingleScript(RavenJObject doc, ScriptedPatchRequest patch, int size, string docId)
-		{
-			JintEngine jintEngine;
-			try
-			{
-				jintEngine = scriptsCache.CheckoutScript(CreateEngine, patch);
-			}
-			catch (NotSupportedException e)
-			{
-				throw new ParseException("Could not parse script", e);
-			}
-			catch (JintException e)
-			{
-				throw new ParseException("Could not parse script", e);
-			}
-			catch (Exception e)
-			{
-				throw new ParseException("Could not parse: " + Environment.NewLine + patch.Script, e);
-			}
+        public virtual RavenJObject Apply(ScriptedJsonPatcherOperationScope scope, RavenJObject document, ScriptedPatchRequest patch, int size = 0, string docId = null)
+        {
+            if (document == null)
+                return null;
 
-			loadDocumentStatic = loadDocument;
-			try
-			{
-			    CustomizeEngine(jintEngine);
-			    jintEngine.SetFunction("PutDocument", ((Action<string, JsObject, JsObject>) (PutDocument)));
-			    jintEngine.SetParameter("__document_id", docId);
-			    foreach (var kvp in patch.Values)
-			    {
-			        var token = kvp.Value as RavenJToken;
-			        if (token != null)
-			        {
-			            jintEngine.SetParameter(kvp.Key, ToJsInstance(jintEngine.Global, token));
-			        }
-			        else
-			        {
-			            var rjt = RavenJToken.FromObject(kvp.Value);
-			            var jsInstance = ToJsInstance(jintEngine.Global, rjt);
-			            jintEngine.SetParameter(kvp.Key, jsInstance);
-			        }
-			    }
-			    var jsObject = ToJsObject(jintEngine.Global, doc);
-			    jintEngine.ResetSteps();
-			    if (size != 0)
-			    {
-			        jintEngine.SetMaxSteps(maxSteps + (size*additionalStepsPerSize));
-			    }
-			    jintEngine.CallFunction("ExecutePatchScript", jsObject);
-			    foreach (var kvp in patch.Values)
-			    {
-			        jintEngine.RemoveParameter(kvp.Key);
-			    }
-			    jintEngine.RemoveParameter("__document_id");
-			    RemoveEngineCustomizations(jintEngine);
-			    OutputLog(jintEngine);
+            if (String.IsNullOrEmpty(patch.Script))
+                throw new InvalidOperationException("Patch script must be non-null and not empty");
 
-			    scriptsCache.CheckinScript(patch, jintEngine);
+            var resultDocument = ApplySingleScript(document, patch, size, docId, scope);
+            if (resultDocument != null)
+                document = resultDocument;
 
-			    return ConvertReturnValue(jsObject);
-			}
-			catch (ConcurrencyException)
-			{
-			    throw;
-			}
-			catch (Exception errorEx)
-			{
-				OutputLog(jintEngine);
-				var errorMsg = "Unable to execute JavaScript: " + Environment.NewLine + patch.Script;
-				var error = errorEx as JsException;
-				if (error != null)
-					errorMsg += Environment.NewLine + "Error: " + Environment.NewLine + string.Join(Environment.NewLine, error.Value);
-				if (Debug.Count != 0)
-					errorMsg += Environment.NewLine + "Debug information: " + Environment.NewLine +
-								string.Join(Environment.NewLine, Debug);
+            return document;
+        }
 
-				throw new InvalidOperationException(errorMsg, errorEx);
-			}
-			finally
-			{
-				loadDocumentStatic = null;
-			}
-		}
+        private RavenJObject ApplySingleScript(RavenJObject doc, ScriptedPatchRequest patch, int size, string docId, ScriptedJsonPatcherOperationScope scope)
+        {
+            Engine jintEngine;
+            var customFunctions = scope.CustomFunctions != null ? scope.CustomFunctions.DataAsJson : null;
+            try
+            {
+                jintEngine = ScriptsCache.CheckoutScript(CreateEngine, patch, customFunctions);
+            }
+            catch (NotSupportedException e)
+            {
+                throw new ParseException("Could not parse script", e);
+            }
+            catch (JavaScriptException e)
+            {
+                throw new ParseException("Could not parse script", e);
+            }
+            catch (Exception e)
+            {
+                throw new ParseException("Could not parse: " + Environment.NewLine + patch.Script, e);
+            }
 
-		protected virtual void RemoveEngineCustomizations(JintEngine jintEngine)
-		{
-		}
+            try
+            {
+                PrepareEngine(patch, docId, size, scope, jintEngine);
 
-		protected virtual RavenJObject ConvertReturnValue(JsObject jsObject)
-		{
-			return ToRavenJObject(jsObject);
-		}
+                var jsObject = scope.ToJsObject(jintEngine, doc);
+                jintEngine.Invoke("ExecutePatchScript", jsObject);
 
-		public RavenJObject ToRavenJObject(JsObject jsObject)
-		{
-			var rjo = new RavenJObject();
-			foreach (var key in jsObject.GetKeys())
-			{
-			    if (key == Constants.ReduceKeyFieldName || key == Constants.DocumentIdFieldName)
-			        continue;
-				var jsInstance = jsObject[key];
-				switch (jsInstance.Type)
-				{
-					case JsInstance.CLASS_REGEXP:
-					case JsInstance.CLASS_ERROR:
-					case JsInstance.CLASS_ARGUMENTS:
-					case JsInstance.CLASS_DESCRIPTOR:
-					case JsInstance.CLASS_FUNCTION:
-						continue;
-				}
-				rjo[key] = ToRavenJToken(jsInstance);
-			}
-			return rjo;
-		}
+                CleanupEngine(patch, jintEngine, scope);
 
-		private RavenJToken ToRavenJToken(JsInstance v)
-		{
-			switch (v.Class)
-			{
-			    case JsInstance.TYPE_OBJECT:
-			    case JsInstance.CLASS_OBJECT:
-			        return ToRavenJObject((JsObject) v);
-			    case JsInstance.CLASS_DATE:
-			        var dt = (DateTime) v.Value;
-			        return new RavenJValue(dt);
-			    case JsInstance.TYPE_NUMBER:
-			    case JsInstance.CLASS_NUMBER:
-			        var num = (double) v.Value;
+                OutputLog(jintEngine);
+                if (scope.DebugMode)
+                    Debug.Add(string.Format("Statements executed: {0}", jintEngine.StatementsCount));
 
-					KeyValuePair<RavenJValue, object> property;
-					if (propertiesByValue.TryGetValue(v, out property))
-					{
-						var originalValue = property.Key;
-						if (originalValue.Type == JTokenType.Float)
-			                return new RavenJValue(num);
-						if (originalValue.Type == JTokenType.Integer)
-				        {
-							// If the current value is exactly as the original value, we can return the original value before we made the JS conversion, 
-							// which will convert a Int64 to jsFloat.
-							var originalJsValue = property.Value;
-							if (originalJsValue is double && Math.Abs(num - (double)originalJsValue) < double.Epsilon)
-								return originalValue;
-					        
-							return new RavenJValue((long) num);
-				        }
-			        }
+                ScriptsCache.CheckinScript(patch, jintEngine, customFunctions);
 
-			        // If we don't have the type, assume that if the number ending with ".0" it actually an integer.
-			        var integer = Math.Truncate(num);
-			        if (Math.Abs(num - integer) < double.Epsilon)
-			            return new RavenJValue((long) integer);
-			        return new RavenJValue(num);
-			    case JsInstance.TYPE_STRING:
-			    case JsInstance.CLASS_STRING:
-			    {
-			        const string ravenDataByteArrayToBase64 = "raven-data:byte[];base64,";
-			        var value = v.Value as string;
-			        if (value != null && value.StartsWith(ravenDataByteArrayToBase64))
-			        {
-			            value = value.Remove(0, ravenDataByteArrayToBase64.Length);
-			            var byteArray = Convert.FromBase64String(value);
-			            return new RavenJValue(byteArray);
-			        }
-                    return new RavenJValue(v.Value);
-			    }
-			    case JsInstance.TYPE_BOOLEAN:
-			    case JsInstance.CLASS_BOOLEAN:
-			        return new RavenJValue(v.Value);
-			    case JsInstance.CLASS_NULL:
-			    case JsInstance.TYPE_NULL:
-			        return RavenJValue.Null;
-			    case JsInstance.CLASS_UNDEFINED:
-			    case JsInstance.TYPE_UNDEFINED:
-			        return RavenJValue.Null;
-			    case JsInstance.CLASS_ARRAY:
-			        var jsArray = ((JsArray) v);
-			        var rja = new RavenJArray();
+                return scope.ConvertReturnValue(jsObject);
+            }
+            catch (ConcurrencyException)
+            {
+                throw;
+            }
+            catch (Exception errorEx)
+            {
+                jintEngine.ResetStatementsCount();
 
-			        for (int i = 0; i < jsArray.Length; i++)
-			        {
-			            var jsInstance = jsArray.get(i);
-			            var ravenJToken = ToRavenJToken(jsInstance);
-			            if (ravenJToken == null)
-			                continue;
-			            rja.Add(ravenJToken);
-			        }
-			        return rja;
-			    case JsInstance.CLASS_REGEXP:
-			    case JsInstance.CLASS_ERROR:
-			    case JsInstance.CLASS_ARGUMENTS:
-			    case JsInstance.CLASS_DESCRIPTOR:
-			    case JsInstance.CLASS_FUNCTION:
-			        return null;
-			    default:
-			        throw new NotSupportedException(v.Class);
-			}
-		}
+                OutputLog(jintEngine);
+                var errorMsg = "Unable to execute JavaScript: " + Environment.NewLine + patch.Script + Environment.NewLine;
+                var error = errorEx as JavaScriptException;
+                if (error != null)
+                    errorMsg += Environment.NewLine + "Error: " + Environment.NewLine + string.Join(Environment.NewLine, error.Error);
+                if (Debug.Count != 0)
+                    errorMsg += Environment.NewLine + "Debug information: " + Environment.NewLine +
+                                string.Join(Environment.NewLine, Debug);
 
-		protected JsObject ToJsObject(IGlobal global, RavenJObject doc)
-		{
-			var jsObject = global.ObjectClass.New();
-			foreach (var prop in doc)
-			{
-				var jsValue = ToJsInstance(global, prop.Value);
+                if (error != null)
+                    errorMsg += Environment.NewLine + "Stacktrace:" + Environment.NewLine + error.CallStack;
 
-				var value = prop.Value as RavenJValue;
-				if (value != null)
-					propertiesByValue[jsValue] = new KeyValuePair<RavenJValue, object>(value, jsValue.Value);
+                var targetEx = errorEx as TargetInvocationException;
+                if (targetEx != null && targetEx.InnerException != null)
+                    throw new InvalidOperationException(errorMsg, targetEx.InnerException);
 
-				jsObject.DefineOwnProperty(prop.Key, jsValue);
-			}
-			return jsObject;
-		}
+                var recursionEx = errorEx as RecursionDepthOverflowException;
+                if (recursionEx != null)
+                    errorMsg += Environment.NewLine + "Max recursion depth is limited to: " + MaxRecursionDepth;
 
-		private JsInstance ToJsInstance(IGlobal global, RavenJToken value)
-		{
-			switch (value.Type)
-			{
-				case JTokenType.Array:
-					return ToJsArray(global, (RavenJArray)value);
-				case JTokenType.Object:
-					return ToJsObject(global, (RavenJObject)value);
-				case JTokenType.Null:
-					return JsNull.Instance;
-				case JTokenType.Boolean:
-					var boolVal = ((RavenJValue)value);
-					return global.BooleanClass.New((bool)boolVal.Value);
-				case JTokenType.Float:
-					var fltVal = ((RavenJValue)value);
-					if (fltVal.Value is float)
-						return new JsNumber((float)fltVal.Value, global.NumberClass);
-					if (fltVal.Value is decimal)
-						return global.NumberClass.New((double)(decimal)fltVal.Value);
-					return global.NumberClass.New((double)fltVal.Value);
-				case JTokenType.Integer:
-					var intVal = ((RavenJValue)value);
-					if (intVal.Value is int)
-					{
-						return global.NumberClass.New((int)intVal.Value);
-					}
-					return global.NumberClass.New((long)intVal.Value);
-				case JTokenType.Date:
-					var dtVal = ((RavenJValue)value);
-					return global.DateClass.New((DateTime)dtVal.Value);
-				case JTokenType.String:
-					var strVal = ((RavenJValue)value);
-					return global.StringClass.New((string)strVal.Value);
-                case JTokenType.Bytes:
-			        var byteValue = (RavenJValue)value;
-			        var base64 = Convert.ToBase64String((byte[])byteValue.Value);
-                    return global.StringClass.New("raven-data:byte[];base64," + base64);
-				default:
-					throw new NotSupportedException(value.Type.ToString());
-			}
-		}
+                throw new InvalidOperationException(errorMsg, errorEx);
+            }
+        }
 
-		private JsArray ToJsArray(IGlobal global, RavenJArray array)
-		{
-			var jsArr = global.ArrayClass.New();
-			for (int i = 0; i < array.Length; i++)
-			{
-				jsArr.put(i, ToJsInstance(global, array[i]));
-			}
-			return jsArr;
-		}
+        private void CleanupEngine(ScriptedPatchRequest patch, Engine jintEngine, ScriptedJsonPatcherOperationScope scope)
+        {
+            foreach (var kvp in patch.Values)
+                jintEngine.Global.Delete(kvp.Key, true);
 
-	  
-		private JintEngine CreateEngine(ScriptedPatchRequest patch)
-		{
-			var scriptWithProperLines = NormalizeLineEnding(patch.Script);
-			var wrapperScript = String.Format(@"
-function ExecutePatchScript(docInner){{
-  (function(doc){{
-	{0}
-  }}).apply(docInner);
-}};
-", scriptWithProperLines);
+            jintEngine.Global.Delete("__document_id", true);
+            RemoveEngineCustomizations(jintEngine, scope);
+        }
 
-			var jintEngine = new JintEngine()
-				.AllowClr(false)
+        private void PrepareEngine(ScriptedPatchRequest patch, string docId, int size, ScriptedJsonPatcherOperationScope scope, Engine jintEngine)
+        {
+            scope.AdditionalStepsPerSize = additionalStepsPerSize;
+            scope.MaxSteps = maxSteps;
+
+
+            if (size != 0)
+            {
+                totalScriptSteps = maxSteps + (size * additionalStepsPerSize);
+                jintEngine.Options.MaxStatements(TotalScriptSteps);
+            }
+
+            jintEngine.Global.Delete("PutDocument", false);
+            jintEngine.Global.Delete("LoadDocument", false);
+            jintEngine.Global.Delete("DeleteDocument", false);
+            jintEngine.Global.Delete("IncreaseNumberOfAllowedStepsBy", false);
+
+            CustomizeEngine(jintEngine, scope);
+
+            jintEngine.SetValue("PutDocument", (Func<string, object, object, string>)((key, document, metadata) => scope.PutDocument(key, document, metadata, jintEngine)));
+            jintEngine.SetValue("LoadDocument", (Func<string, JsValue>)(key => scope.LoadDocument(key, jintEngine, ref totalScriptSteps)));
+            jintEngine.SetValue("DeleteDocument", (Action<string>)(scope.DeleteDocument));
+            jintEngine.SetValue("__document_id", docId);
+
+            jintEngine.SetValue("IncreaseNumberOfAllowedStepsBy", (Action<int>)(number =>
+            {
+                if (database != null && database.Configuration.AllowScriptsToAdjustNumberOfSteps)
+                {
+                    scope.MaxSteps += number;
+                    jintEngine.Options.MaxStatements(totalScriptSteps + number);
+
+                    return;
+                }
+
+                throw new InvalidOperationException("Cannot use 'IncreaseNumberOfAllowedStepsBy' method, because `Raven/AllowScriptsToAdjustNumberOfSteps` is set to false.");
+            }));
+
+            foreach (var kvp in patch.Values)
+            {
+                var token = kvp.Value as RavenJToken;
+                if (token != null)
+                {
+                    jintEngine.SetValue(kvp.Key, scope.ToJsInstance(jintEngine, token));
+                }
+                else
+                {
+                    var rjt = RavenJToken.FromObject(kvp.Value);
+                    var jsInstance = scope.ToJsInstance(jintEngine, rjt);
+                    jintEngine.SetValue(kvp.Key, jsInstance);
+                }
+            }
+
+            jintEngine.ResetStatementsCount();
+        }
+
+        private Engine CreateEngine(ScriptedPatchRequest patch)
+        {
+            var scriptWithProperLines = NormalizeLineEnding(patch.Script);
+            // NOTE: we merged few first lines of wrapping script to make sure {0} is at line 0.
+            // This will all us to show proper line number using user lines locations.
+            var wrapperScript = String.Format(@"function ExecutePatchScript(docInner){{ (function(doc){{ {0} }}).apply(docInner); }};", scriptWithProperLines);
+
+            var jintEngine = new Engine(cfg =>
+            {
 #if DEBUG
-				.SetDebugMode(true)
+                cfg.AllowDebuggerStatement();
 #else
-                .SetDebugMode(false)
+                cfg.AllowDebuggerStatement(false);
 #endif
-                .SetMaxRecursions(50)
-				.SetMaxSteps(maxSteps);
+                cfg.LimitRecursion(MaxRecursionDepth);
+                cfg.MaxStatements(maxSteps);
+                cfg.NullPropagation();
+            });
 
             AddScript(jintEngine, "Raven.Database.Json.lodash.js");
-			AddScript(jintEngine, "Raven.Database.Json.ToJson.js");
-			AddScript(jintEngine, "Raven.Database.Json.RavenDB.js");
+            AddScript(jintEngine, "Raven.Database.Json.ToJson.js");
+            AddScript(jintEngine, "Raven.Database.Json.RavenDB.js");
 
-			jintEngine.SetFunction("LoadDocument", ((Func<string, object>)(value =>
-			{
-				var loadedDoc = loadDocumentStatic(value);
-				if (loadedDoc == null)
-					return null;
-				loadedDoc[Constants.DocumentIdFieldName] = value;
-				return ToJsObject(jintEngine.Global, loadedDoc);
-			})));
-
-            jintEngine.Run(wrapperScript);
-
-			return jintEngine;
-		}
-
-        private static readonly string[] EtagKeyNames = new[]
-	    {
-	        "etag",
-	        "@etag",
-	        "Etag",
-	        "ETag",
-	    };
-
-	    private void PutDocument(string key, JsObject doc, JsObject meta)
-	    {
-	        if (doc == null)
-	        {
-	            throw new InvalidOperationException(
-	                string.Format("Created document cannot be null or empty. Document key: '{0}'", key));
-	        }
-
-            var newDocument = new JsonDocument
+            jintEngine.Execute(wrapperScript, new ParserOptions
             {
-                Key = key,
-                DataAsJson = ToRavenJObject(doc)
-            };
-            
-	        if (meta == null)
-	        {
-	            RavenJToken value;
-	            if (newDocument.DataAsJson.TryGetValue("@metadata", out value))
-	            {
-	                newDocument.DataAsJson.Remove("@metadata");
-	                newDocument.Metadata = (RavenJObject) value;
-	            }
-	        }
-	        else
-	        {
-	            foreach (var etagKeyName in EtagKeyNames)
-	            {
-	                JsInstance result;
-	                if (!meta.TryGetProperty(etagKeyName, out result))
-	                    continue;
-	                string etag = result.ToString();
-	                meta.Delete(etagKeyName);
-	                if (string.IsNullOrEmpty(etag))
-	                    continue;
-	                Etag newDocumentEtag;
-	                if (Etag.TryParse(etag, out newDocumentEtag) == false)
-	                {
-	                    throw new InvalidOperationException(string.Format("Invalid ETag value '{0}' for document '{1}'",
-	                                                                      etag, key));
-	                }
-	                newDocument.Etag = newDocumentEtag;
-	            }
-	            newDocument.Metadata = ToRavenJObject(meta);
-	        }
-	        ValidateDocument(newDocument);
-            CreatedDocs.Add(newDocument);
-	    }
+                Source = "main.js"
+            });
 
-	    protected virtual void ValidateDocument(JsonDocument newDocument)
-	    {
-	    }
+            return jintEngine;
+        }
 
-	    private static string NormalizeLineEnding(string script)
-		{
-			var sb = new StringBuilder();
-			using (var reader = new StringReader(script))
-			{
-				while (true)
-				{
-					var line = reader.ReadLine();
-					if (line == null)
-						return sb.ToString();
-					sb.AppendLine(line);
-				}
-			}
-		}
+        private static string NormalizeLineEnding(string script)
+        {
+            var sb = new StringBuilder();
+            using (var reader = new StringReader(script))
+            {
+                while (true)
+                {
+                    var line = reader.ReadLine();
+                    if (line == null)
+                        return sb.ToString();
+                    sb.AppendLine(line);
+                }
+            }
+        }
 
-		private static void AddScript(JintEngine jintEngine, string ravenDatabaseJsonMapJs)
-		{
-			jintEngine.Run(GetFromResources(ravenDatabaseJsonMapJs));
-		}
+        private static void AddScript(Engine jintEngine, string ravenDatabaseJsonMapJs)
+        {
+            jintEngine.Execute(GetFromResources(ravenDatabaseJsonMapJs), new ParserOptions
+            {
+                Source = ravenDatabaseJsonMapJs
+            });
+        }
 
-		protected virtual void CustomizeEngine(JintEngine jintEngine)
-		{
-		}
+        protected virtual void CustomizeEngine(Engine engine, ScriptedJsonPatcherOperationScope scope)
+        {
+        }
 
-		private void OutputLog(JintEngine engine)
-		{
-			var arr = engine.GetParameter("debug_outputs") as JsArray;
-			if (arr == null)
-				return;
-			for (int i = 0; i < arr.Length; i++)
-			{
-				var o = arr.get(i);
-				if (o == null)
-					continue;
-				Debug.Add(o.ToString());
-			}
-			engine.SetParameter("debug_outputs", engine.Global.ArrayClass.New());
-		}
+        protected virtual void RemoveEngineCustomizations(Engine engine, ScriptedJsonPatcherOperationScope scope)
+        {
+        }
 
-		private static string GetFromResources(string resourceName)
-		{
-			Assembly assem = typeof(ScriptedJsonPatcher).Assembly;
-			using (Stream stream = assem.GetManifestResourceStream(resourceName))
-			{
-				using (var reader = new StreamReader(stream))
-				{
-					return reader.ReadToEnd();
-				}
-			}
-		}
-	}
+        private void OutputLog(Engine engine)
+        {
+            var arr = engine.GetValue("debug_outputs");
+            if (arr == JsValue.Null || arr.IsArray() == false)
+                return;
 
-	[Serializable]
-	public class ParseException : Exception
-	{
-		public ParseException()
-		{
-		}
+            foreach (var property in arr.AsArray().Properties)
+            {
+                if (property.Key == "length")
+                    continue;
 
-		public ParseException(string message) : base(message)
-		{
-		}
+                var jsInstance = property.Value.Value;
+                if (!jsInstance.HasValue)
+                    continue;
 
-		public ParseException(string message, Exception inner) : base(message, inner)
-		{
-		}
+                var value = jsInstance.Value;
+                string output = null;
+                switch (value.Type)
+                {
+                    case Types.Boolean:
+                        output = value.AsBoolean().ToString();
+                        break;
+                    case Types.Null:
+                    case Types.Undefined:
+                        output = value.ToString();
+                        break;
+                    case Types.Number:
+                        output = value.AsNumber().ToString(CultureInfo.InvariantCulture);
+                        break;
+                    case Types.String:
+                        output = value.AsString();
+                        break;
+                }
 
-		protected ParseException(
-			SerializationInfo info,
-			StreamingContext context) : base(info, context)
-		{
-		}
-	}
+                if (output != null)
+                    Debug.Add(output);
+            }
+
+            engine.Invoke("clear_debug_outputs");
+        }
+
+        private static string GetFromResources(string resourceName)
+        {
+            Assembly assem = typeof(ScriptedJsonPatcher).Assembly;
+            using (Stream stream = assem.GetManifestResourceStream(resourceName))
+            {
+                using (var reader = new StreamReader(stream))
+                {
+                    return reader.ReadToEnd();
+                }
+            }
+        }
+    }
+
+    [Serializable]
+    public class ParseException : Exception
+    {
+        public ParseException()
+        {
+        }
+
+        public ParseException(string message)
+            : base(message)
+        {
+        }
+
+        public ParseException(string message, Exception inner)
+            : base(message, inner)
+        {
+        }
+
+        protected ParseException(
+            SerializationInfo info,
+            StreamingContext context)
+            : base(info, context)
+        {
+        }
+    }
 }

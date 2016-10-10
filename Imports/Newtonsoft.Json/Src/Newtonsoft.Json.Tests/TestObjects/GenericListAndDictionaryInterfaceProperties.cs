@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -27,10 +27,10 @@ using System.Collections.Generic;
 
 namespace Raven.Imports.Newtonsoft.Json.Tests.TestObjects
 {
-  public class GenericListAndDictionaryInterfaceProperties
-  {
-    public IEnumerable<int> IEnumerableProperty { get; set; }
-    public IList<int> IListProperty { get; set; }
-    public IDictionary<string, int> IDictionaryProperty { get; set; }
-  }
+    public class GenericListAndDictionaryInterfaceProperties
+    {
+        public IEnumerable<int> IEnumerableProperty { get; set; }
+        public IList<int> IListProperty { get; set; }
+        public IDictionary<string, int> IDictionaryProperty { get; set; }
+    }
 }

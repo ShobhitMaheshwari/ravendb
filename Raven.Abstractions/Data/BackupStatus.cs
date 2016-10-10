@@ -9,31 +9,83 @@ using System.Collections.Generic;
 
 namespace Raven.Abstractions.Data
 {
-	public class BackupStatus
-	{
-		public const string RavenBackupStatusDocumentKey = "Raven/Backup/Status";
+    public class BackupStatus
+    {
+        public enum BackupMessageSeverity
+        {
+            Informational,
+            Error
+        }
 
-		public enum BackupMessageSeverity
-		{
-			Informational,
-			Error
-		}
+        public const string RavenBackupStatusDocumentKey = "Raven/Backup/Status";
 
-		public DateTime Started { get; set; }
-		public DateTime? Completed { get; set; }
-		public bool IsRunning { get; set; }
-		public List<BackupMessage> Messages { get; set; }
+        public BackupStatus()
+        {
+            Messages = new List<BackupMessage>();
+        }
 
-		public class BackupMessage
-		{
-			public string Message { get; set; }
-			public DateTime Timestamp { get; set; }
-			public BackupMessageSeverity Severity { get; set; }
-		}
+        /// <summary>
+        /// Backup start time.
+        /// </summary>
+        public DateTime Started { get; set; }
 
-		public BackupStatus()
-		{
-			Messages = new List<BackupMessage>();
-		}
-	}
+        /// <summary>
+        /// Backup completed time.
+        /// </summary>
+        public DateTime? Completed { get; set; }
+
+        /// <summary>
+        /// Indicates if backup is currently running.
+        /// </summary>
+        public bool IsRunning { get; set; }
+
+        /// <summary>
+        /// List of backup messages.
+        /// </summary>
+        public List<BackupMessage> Messages { get; set; }
+
+        public class BackupMessage
+        {
+            /// <summary>
+            /// Message text.
+            /// </summary>
+            public string Message { get; set; }
+
+            /// <summary>
+            /// Message details.
+            /// </summary>
+            public string Details { get; set; }
+
+            /// <summary>
+            /// Created timestamp.
+            /// </summary>
+            public DateTime Timestamp { get; set; }
+
+            /// <summary>
+            /// Message severity.
+            /// </summary>
+            public BackupMessageSeverity Severity { get; set; }
+
+            public override bool Equals(object obj)
+            {
+                var item = obj as BackupMessage;
+
+                if (item == null)
+                {
+                    return false;
+                }
+
+                return Message == item.Message &&
+                       Timestamp == item.Timestamp &&
+                       Details == item.Details &&
+                       Severity == item.Severity;
+            }
+
+            public override int GetHashCode()
+            {
+                return (Message != null ? Message.GetHashCode() : 0) ^ (Details != null ? Details.GetHashCode() : 1) ^ Timestamp.GetHashCode() ^
+                       (Severity.GetHashCode() << 16);
+            }
+        }
+    }
 }

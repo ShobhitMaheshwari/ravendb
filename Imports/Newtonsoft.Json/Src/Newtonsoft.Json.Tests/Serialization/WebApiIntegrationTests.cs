@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -30,134 +30,132 @@ using System.IO;
 using System.Linq;
 #endif
 using System.Text;
-#if !NETFX_CORE
-using NUnit.Framework;
-#else
+#if NETFX_CORE
 using Microsoft.VisualStudio.TestPlatform.UnitTestFramework;
 using TestFixture = Microsoft.VisualStudio.TestPlatform.UnitTestFramework.TestClassAttribute;
 using Test = Microsoft.VisualStudio.TestPlatform.UnitTestFramework.TestMethodAttribute;
+#elif DNXCORE50
+using Xunit;
+using Test = Xunit.FactAttribute;
+using Assert = Newtonsoft.Json.Tests.XUnitAssert;
+#else
+using NUnit.Framework;
 #endif
-#if !(SILVERLIGHT || NETFX_CORE || NET20)
+#if !(NETFX_CORE || NET20)
 using System.Runtime.Serialization.Json;
 #endif
 using Raven.Imports.Newtonsoft.Json.Serialization;
 
 namespace Raven.Imports.Newtonsoft.Json.Tests.Serialization
 {
-  [TestFixture]
-  public class WebApiIntegrationTests : TestFixtureBase
-  {
-    [Test]
-    public void SerializeSerializableType()
+    [TestFixture]
+    public class WebApiIntegrationTests : TestFixtureBase
     {
-      SerializableType serializableType = new SerializableType("protected")
+        [Test]
+        public void SerializeSerializableType()
         {
-          publicField = "public",
-          protectedInternalField = "protected internal",
-          internalField = "internal",
-          PublicProperty = "private",
-          nonSerializedField = "Error"
-        };
-
-#if !(SILVERLIGHT || NETFX_CORE || NET20 || PORTABLE)
-      MemoryStream ms = new MemoryStream();
-      DataContractJsonSerializer dataContractJsonSerializer = new DataContractJsonSerializer(typeof(SerializableType));
-      dataContractJsonSerializer.WriteObject(ms, serializableType);
-
-      string dtJson = Encoding.UTF8.GetString(ms.ToArray());
-      string dtExpected = @"{""internalField"":""internal"",""privateField"":""private"",""protectedField"":""protected"",""protectedInternalField"":""protected internal"",""publicField"":""public""}";
-
-      Assert.AreEqual(dtExpected, dtJson);
-#endif
-
-      string expected = "{\"publicField\":\"public\",\"internalField\":\"internal\",\"protectedInternalField\":\"protected internal\",\"protectedField\":\"protected\",\"privateField\":\"private\"}";
-      string json = JsonConvert.SerializeObject(serializableType, new JsonSerializerSettings
-        {
-          ContractResolver = new DefaultContractResolver
+            SerializableType serializableType = new SerializableType("protected")
             {
-#if !(SILVERLIGHT || NETFX_CORE || PORTABLE)
-              IgnoreSerializableAttribute = false
+                publicField = "public",
+                protectedInternalField = "protected internal",
+                internalField = "internal",
+                PublicProperty = "private",
+                nonSerializedField = "Error"
+            };
+
+#if !(NETFX_CORE || NET20 || PORTABLE || DNXCORE50 || PORTABLE40)
+            MemoryStream ms = new MemoryStream();
+            DataContractJsonSerializer dataContractJsonSerializer = new DataContractJsonSerializer(typeof(SerializableType));
+            dataContractJsonSerializer.WriteObject(ms, serializableType);
+
+            string dtJson = Encoding.UTF8.GetString(ms.ToArray());
+            string dtExpected = @"{""internalField"":""internal"",""privateField"":""private"",""protectedField"":""protected"",""protectedInternalField"":""protected internal"",""publicField"":""public""}";
+
+            Assert.AreEqual(dtExpected, dtJson);
 #endif
-            }
-        });
 
-      Assert.AreEqual(expected, json);
-    }
-
-#if !(SILVERLIGHT || NETFX_CORE || PORTABLE)
-    [Test]
-    public void SerializeInheritedType()
-    {
-      InheritedType serializableType = new InheritedType("protected")
-      {
-        publicField = "public",
-        protectedInternalField = "protected internal",
-        internalField = "internal",
-        PublicProperty = "private",
-        nonSerializedField = "Error",
-        inheritedTypeField = "inherited"
-      };
-
-      string json = JsonConvert.SerializeObject(serializableType);
-
-      Assert.AreEqual(@"{""inheritedTypeField"":""inherited"",""publicField"":""public"",""PublicProperty"":""private""}", json);
-    }
+            string expected = "{\"publicField\":\"public\",\"internalField\":\"internal\",\"protectedInternalField\":\"protected internal\",\"protectedField\":\"protected\",\"privateField\":\"private\"}";
+            string json = JsonConvert.SerializeObject(serializableType, new JsonSerializerSettings
+            {
+                ContractResolver = new DefaultContractResolver
+                {
+#if !(NETFX_CORE || PORTABLE || DNXCORE50 || PORTABLE40)
+                    IgnoreSerializableAttribute = false
 #endif
-  }
+                }
+            });
 
-  public class InheritedType : SerializableType
-  {
-    public string inheritedTypeField;
+            Assert.AreEqual(expected, json);
+        }
 
-    public InheritedType(string protectedFieldValue) : base(protectedFieldValue)
-    {
+#if !(NETFX_CORE || PORTABLE || DNXCORE50 || PORTABLE40)
+        [Test]
+        public void SerializeInheritedType()
+        {
+            InheritedType serializableType = new InheritedType("protected")
+            {
+                publicField = "public",
+                protectedInternalField = "protected internal",
+                internalField = "internal",
+                PublicProperty = "private",
+                nonSerializedField = "Error",
+                inheritedTypeField = "inherited"
+            };
+
+            string json = JsonConvert.SerializeObject(serializableType);
+
+            Assert.AreEqual(@"{""inheritedTypeField"":""inherited"",""publicField"":""public"",""PublicProperty"":""private""}", json);
+        }
+#endif
     }
-  }
 
-#if !(SILVERLIGHT || NETFX_CORE || PORTABLE)
-  [Serializable]
+    public class InheritedType : SerializableType
+    {
+        public string inheritedTypeField;
+
+        public InheritedType(string protectedFieldValue) : base(protectedFieldValue)
+        {
+        }
+    }
+
+#if !(NETFX_CORE || PORTABLE || DNXCORE50 || PORTABLE40)
+    [Serializable]
 #else
-  [JsonObject(MemberSerialization.Fields)]
+    [JsonObject(MemberSerialization.Fields)]
 #endif
-  public class SerializableType : IEquatable<SerializableType>
-  {
-    public SerializableType(string protectedFieldValue)
+    public class SerializableType : IEquatable<SerializableType>
     {
-      this.protectedField = protectedFieldValue;
-    }
+        public SerializableType(string protectedFieldValue)
+        {
+            protectedField = protectedFieldValue;
+        }
 
-    public string publicField;
-    internal string internalField;
-    protected internal string protectedInternalField;
-    protected string protectedField;
-    private string privateField;
+        public string publicField;
+        internal string internalField;
+        protected internal string protectedInternalField;
+        protected string protectedField;
+        private string privateField;
 
-    public string PublicProperty
-    {
-      get
-      {
-        return privateField;
-      }
-      set
-      {
-        this.privateField = value;
-      }
-    }
+        public string PublicProperty
+        {
+            get { return privateField; }
+            set { privateField = value; }
+        }
 
-#if !(SILVERLIGHT || NETFX_CORE || PORTABLE)
-    [NonSerialized]
+#if !(NETFX_CORE || PORTABLE || DNXCORE50 || PORTABLE40)
+        [NonSerialized]
 #else
-    [JsonIgnore]
+        [JsonIgnore]
 #endif
-    public string nonSerializedField;
+        public string nonSerializedField;
 
-    public bool Equals(SerializableType other)
-    {
-      return this.publicField == other.publicField &&
-          this.internalField == other.internalField &&
-          this.protectedInternalField == other.protectedInternalField &&
-          this.protectedField == other.protectedField &&
-          this.privateField == other.privateField;
+        public bool Equals(SerializableType other)
+        {
+            return publicField == other.publicField &&
+                   internalField == other.internalField &&
+                   protectedInternalField == other.protectedInternalField &&
+                   protectedField == other.protectedField &&
+                   privateField == other.privateField;
+        }
     }
-  }
 }

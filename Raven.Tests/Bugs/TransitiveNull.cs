@@ -6,71 +6,73 @@
 using Raven.Abstractions.Data;
 using Raven.Json.Linq;
 using Raven.Database.Data;
+using Raven.Tests.Common;
+
 using Xunit;
 using System.Linq;
 
 namespace Raven.Tests.Bugs
 {
-	public class TransitiveNull : RavenTest
-	{
-		[Fact]
-		public void WillNotError()
-		{
-			using (var store = NewDocumentStore())
-			{
-				store.DatabaseCommands.Put("users/1", null,
-										   new RavenJObject
-										   {
-											   {"Name", "user1"},
-										   },
-										   new RavenJObject());
+    public class TransitiveNull : RavenTest
+    {
+        [Fact]
+        public void WillNotError()
+        {
+            using (var store = NewDocumentStore())
+            {
+                store.DatabaseCommands.Put("users/1", null,
+                                           new RavenJObject
+                                           {
+                                               {"Name", "user1"},
+                                           },
+                                           new RavenJObject());
 
-				store.DatabaseCommands.Put("users/2", null,
-										   new RavenJObject
-										   {
-											   {"Name", "user2"},
-										   },
-										   new RavenJObject());
+                store.DatabaseCommands.Put("users/2", null,
+                                           new RavenJObject
+                                           {
+                                               {"Name", "user2"},
+                                           },
+                                           new RavenJObject());
 
-				store.DatabaseCommands.Query("dynamic", new IndexQuery
-				{
-					Query = "Tags,:abc"
-				}, new string[0]);
+                store.DatabaseCommands.Query("dynamic", new IndexQuery
+                {
+                    Query = "Tags,:abc"
+                }, new string[0]);
 
-				Assert.Empty(store.DocumentDatabase.Statistics.Errors);
-			}
-		}
+                Assert.Empty(store.SystemDatabase.Statistics.Errors);
+            }
+        }
 
-		[Fact]
-		public void WillNotIncludeDocumentsThatHasNoItemsToIndex()
-		{
-			using (var store = NewDocumentStore())
-			{
-				store.DatabaseCommands.Put("users/1", null,
-										   new RavenJObject
-										   {
-											   {"Name", "user1"},
-										   },
-										   new RavenJObject());
+        [Fact]
+        public void WillNotIncludeDocumentsThatHasNoItemsToIndex()
+        {
+            using (var store = NewDocumentStore())
+            {
+                store.DatabaseCommands.Put("users/1", null,
+                                           new RavenJObject
+                                           {
+                                               {"Name", "user1"},
+                                           },
+                                           new RavenJObject());
 
-				store.DatabaseCommands.Put("users/2", null,
-										   new RavenJObject
-										   {
-											   {"Username", "user2"},
-										   },
-										   new RavenJObject());
+                store.DatabaseCommands.Put("users/2", null,
+                                           new RavenJObject
+                                           {
+                                               {"Username", "user2"},
+                                           },
+                                           new RavenJObject());
 
-				store.DatabaseCommands.Query("dynamic", new IndexQuery
-				{
-					Query = "Name:abc"
-				}, new string[0]);
+                store.DatabaseCommands.Query("dynamic", new IndexQuery
+                {
+                    Query = "Name:abc"
+                }, new string[0]);
 
 
-				var autoIndex = store.DocumentDatabase.IndexStorage.Indexes.First(x=>x.StartsWith("Auto"));
-				var results = store.OpenSession().Advanced.LuceneQuery<dynamic>(autoIndex).WaitForNonStaleResults().ToArray();
+                var autoIndex = store.SystemDatabase.IndexStorage.IndexNames.First(x=>x.StartsWith("Auto"));
+                var results = store.OpenSession().Advanced.DocumentQuery<dynamic>(autoIndex).WaitForNonStaleResults().ToArray();
 
-				Assert.Equal(1, results.Length);
-			}
-		}
-	}
+                Assert.Equal(1, results.Length);
+            }
+        }
+    }
 }

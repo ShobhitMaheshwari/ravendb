@@ -1,11 +1,20 @@
-﻿var debug_outputs = [];
+var debug_outputs = [];
 
 function output(msg) {
-    debug_outputs.push(msg);
+    if (msg instanceof Object) {
+        dump(msg);
+    } else {
+        debug_outputs.push(msg);
+    }
+    
 }
 
 function dump(obj) {
     debug_outputs.push(JSON.stringify(obj));
+}
+
+function clear_debug_outputs() {
+    debug_outputs = [];
 }
 
 String.prototype.trim = String.prototype.trim || function () {

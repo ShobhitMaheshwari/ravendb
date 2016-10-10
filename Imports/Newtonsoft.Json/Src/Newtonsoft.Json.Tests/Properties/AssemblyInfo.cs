@@ -31,12 +31,8 @@ using System.Security;
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
 
-#if WINDOWS_PHONE
-[assembly: AssemblyTitle("Json.NET Tests Windows Phone")]
-#elif SILVERLIGHT
-[assembly: AssemblyTitle("Json.NET Tests Silverlight")]
-#elif PocketPC
-[assembly: AssemblyTitle("Json.NET Tests Compact")]
+#if PORTABLE40
+[assembly: AssemblyTitle("Json.NET Tests Portable .NET 4.0")]
 #elif PORTABLE
 [assembly: AssemblyTitle("Json.NET Tests Portable")]
 #elif NETFX_CORE
@@ -45,6 +41,8 @@ using System.Security;
 [assembly: AssemblyTitle("Json.NET Tests .NET 2.0")]
 #elif NET35
 [assembly: AssemblyTitle("Json.NET Tests .NET 3.5")]
+#elif NET40
+[assembly: AssemblyTitle("Json.NET Tests .NET 4.0")]
 #else
 [assembly: AssemblyTitle("Json.NET Tests")]
 #endif
@@ -60,9 +58,11 @@ using System.Security;
 // Setting ComVisible to false makes the types in this assembly not visible 
 // to COM components.  If you need to access a type in this assembly from 
 // COM, set the ComVisible attribute to true on that type.
+
 [assembly: ComVisible(false)]
 
 // The following GUID is for the ID of the typelib if this project is exposed to COM
+
 [assembly: Guid("0be3d72b-d2ef-409c-985c-d3ede89a25f1")]
 
 // Version information for an assembly consists of the following four values:
@@ -74,7 +74,6 @@ using System.Security;
 //
 // You can specify all the values or you can default the Revision and Build Numbers 
 // by using the '*' as shown below:
-[assembly: AssemblyVersion("4.5.0.0")]
-#if !PocketPC
-[assembly: AssemblyFileVersion("4.5.11.15631")]
-#endif
+
+[assembly: AssemblyVersion("7.0.0.0")]
+[assembly: AssemblyFileVersion("7.0.1.18503")]

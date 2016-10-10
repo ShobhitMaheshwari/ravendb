@@ -3,181 +3,172 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
-using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Text;
+using System.Threading;
 using Raven.Abstractions.Indexing;
 using Raven.Client;
 using Raven.Client.Embedded;
-using Xunit;
-using Raven.Database;
-using Raven.Database.Indexing;
 using Raven.Client.Indexes;
-using Raven.Json.Linq;
 using Raven.Client.Linq;
-using System.Threading;
+using Raven.Tests.Common;
+
+using Xunit;
 
 namespace Raven.Tests.Bugs
 {
-	public class QueryResultCountsWithProjections : IDisposable
-	{
-		EmbeddableDocumentStore store = null;
+    public class QueryResultCountsWithProjections : RavenTest
+    {
+        private readonly EmbeddableDocumentStore store;
 
-		public QueryResultCountsWithProjections()
-		{
-			store = new EmbeddableDocumentStore()
-			{
-				RunInMemory = true
-			};
-			store.Initialize();
-			PopulateDatastore();
-		}
+        public QueryResultCountsWithProjections()
+        {
+            store = NewDocumentStore();
+            PopulateDatastore();
+        }
 
-		public void Dispose()
-		{
-			store.Dispose();
-		}
+        [Fact]
+        public void WhenNoProjectionIsIssuedDuplicateDocumentsAreSkipped()
+        {
+            using (var session = store.OpenSession())
+            {
+                var results = session.Query<Blog>("SelectManyIndexWithNoTransformer").ToArray();
+                Assert.Equal(1, results.Length);
+            }
+        }
 
-		[Fact]
-		public void WhenNoProjectionIsIssuedDuplicateDocumentsAreSkipped()
-		{
-			using (var session = store.OpenSession())
-			{
-				var results = session.Query<Blog>("SelectManyIndexWithNoTransformer").ToArray();
-				Assert.Equal(1, results.Length);
-			}
-		}
+        [Fact]
+        public void WhenProjectionIsIssuedAgainstEntityDuplicateDocumentsAreSkipped()
+        {
+            using (var session = store.OpenSession())
+            {
+                var results = session.Query<Blog>("SelectManyIndexWithNoTransformer")
+                    .Select(x=> new { x.Title, x.Tags })
+                    .ToArray();
+                Assert.Equal(1, results.Length);
+            }
+        }
 
-		[Fact]
-		public void WhenProjectionIsIssuedAgainstEntityDuplicateDocumentsAreSkipped()
-		{
-			using (var session = store.OpenSession())
-			{
-				var results = session.Query<Blog>("SelectManyIndexWithNoTransformer")
-					.Select(x=> new { x.Title, x.Tags })
-					.ToArray();
-				Assert.Equal(1, results.Length);
-			}
-		}
+        [Fact]
+        public void WhenDynamicQueryInvokedAgainstTagsDuplicateDocumentsAreSkipped()
+        {
+            using (var session = store.OpenSession())
+            {
+                var results = session.Query<Blog>()
+                     .Customize(x=>x.WaitForNonStaleResults())
+                     .Where(x => x.Tags.Any(y => y.Name.StartsWith("t")))
+                     .Select(x=> new {
+                         x.Title,
+                         x.Tags
+                     })
+                     .ToArray();
 
-		[Fact]
-		public void WhenDynamicQueryInvokedAgainstTagsDuplicateDocumentsAreSkipped()
-		{
-			using (var session = store.OpenSession())
-			{
-				var results = session.Query<Blog>()
-					 .Customize(x=>x.WaitForNonStaleResults())
-					 .Where(x => x.Tags.Any(y => y.Name.StartsWith("t")))
-					 .Select(x=> new {
-						 x.Title,
-						 x.Tags
-					 })
-					 .ToArray();
+                Assert.Equal(1, results.Length);
+            }
+        }
 
-				Assert.Equal(1, results.Length);
-			}
-		}
+        [Fact]
+        public void WhenProjectionIsIssuedAgainstEntityWithTransformResultsDuplicateDocumentsAreSkipped()
+        {
+            using (var session = store.OpenSession())
+            {
+                var results = session.Query<Blog>("SelectManyIndexWithTransformer")
+                    .TransformWith<BlogProjection>("sampleTransformer")
+                    .ToArray();
+                Assert.Equal(1, results.Length);
+            }
+        }
 
-		[Fact]
-		public void WhenProjectionIsIssuedAgainstEntityWithTransformResultsDuplicateDocumentsAreSkipped()
-		{
-			using (var session = store.OpenSession())
-			{
-				var results = session.Query<Blog>("SelectManyIndexWithTransformer")
-					.As<BlogProjection>()
-					.ToArray();
-				Assert.Equal(1, results.Length);
-			}
-		}
+        [Fact]
+        public void WhenProjectionIsIssuedAgainstIndexAndNotEntityDuplicateDocumentsAreNotSkipped()
+        {
+            using (var session = store.OpenSession())
+            {
+                var results = session.Query<BlogProjection>("SelectManyIndexWithNoTransformer")
+                    .Select(x=> new 
+                    {
+                         x.Title,
+                         x.Tag
+                    })
+                    .ToArray();
+                Assert.Equal(2, results.Length);
+            }
+        }
 
-		[Fact]
-		public void WhenProjectionIsIssuedAgainstIndexAndNotEntityDuplicateDocumentsAreNotSkipped()
-		{
-			using (var session = store.OpenSession())
-			{
-				var results = session.Query<BlogProjection>("SelectManyIndexWithNoTransformer")
-					.Select(x=> new 
-					{
-						 x.Title,
-						 x.Tag
-					})
-					.ToArray();
-				Assert.Equal(2, results.Length);
-			}
-		}
+        private void PopulateDatastore()
+        {
+            store.DatabaseCommands.PutIndex("SelectManyIndexWithNoTransformer",
+                new IndexDefinitionBuilder<Blog,BlogProjection>()
+                {
+                    Map = docs => from doc in docs
+                                  from tag in doc.Tags
+                                  select new
+                                  {
+                                      doc.Title,
+                                      tag.Name
+                                  },
+                    Stores = {{x=>x.Tag, FieldStorage.Yes}}
+                }.ToIndexDefinition(store.Conventions));
 
-		private void PopulateDatastore()
-		{
-			store.DatabaseCommands.PutIndex("SelectManyIndexWithNoTransformer",
-				new IndexDefinitionBuilder<Blog,BlogProjection>()
-				{
-					Map = docs => from doc in docs
-								  from tag in doc.Tags
-								  select new
-								  {
-									  doc.Title,
-									  tag.Name
-								  },
-					Stores = {{x=>x.Tag, FieldStorage.Yes}}
-				}.ToIndexDefinition(store.Conventions));
+             store.DatabaseCommands.PutIndex("SelectManyIndexWithTransformer",
+               new IndexDefinitionBuilder<Blog, Blog>()
+               {
+                   Map = docs => from doc in docs
+                                 from tag in doc.Tags
+                                 select new
+                                 {
+                                     doc.Title,
+                                     tag.Name
+                                 },
+               }.ToIndexDefinition(store.Conventions));
 
-			 store.DatabaseCommands.PutIndex("SelectManyIndexWithTransformer",
-			   new IndexDefinitionBuilder<Blog, Blog>()
-			   {
-				   Map = docs => from doc in docs
-								 from tag in doc.Tags
-								 select new
-								 {
-									 doc.Title,
-									 tag.Name
-								 },
-				   TransformResults = (database, results) => from result in results
-												 select new
-												 {
-													 result.Title,
-													 result.Tags
-												 }
-			   }.ToIndexDefinition(store.Conventions));
+            var transformer = "sampleTransformer";
 
-			 using (var session = store.OpenSession())
-			 {
-				 session.Store(new Blog()
-				 {                    
-					 Title = "1",
-					 Tags = new BlogTag[]{
-						  new BlogTag() { Name = "tagOne" },
-						  new BlogTag() { Name = "tagTwo" }
-					  }
-				 });
-				 session.SaveChanges();
-			 }
+            store.DatabaseCommands.PutTransformer(transformer, new TransformerDefinition()
+            {
+                Name = transformer,
+                TransformResults = @"from result in results select new
+                                                 {
+                                                     result.Title,
+                                                     result.Tags
+                                                 };"
+            });
 
-			 while (store.DocumentDatabase.Statistics.StaleIndexes.Length > 0)
-			 {
-				 Thread.Sleep(10);
-			 }
-		}
+             using (var session = store.OpenSession())
+             {
+                 session.Store(new Blog()
+                 {                    
+                     Title = "1",
+                     Tags = new BlogTag[]{
+                          new BlogTag() { Name = "tagOne" },
+                          new BlogTag() { Name = "tagTwo" }
+                      }
+                 });
+                 session.SaveChanges();
+             }
 
-		public class BlogProjection
-		{
-			public string Title { get; set; }
-			public string Tag { get; set; }
-		}
+             while (store.SystemDatabase.Statistics.StaleIndexes.Length > 0)
+             {
+                 Thread.Sleep(10);
+             }
+        }
+
+        public class BlogProjection
+        {
+            public string Title { get; set; }
+            public string Tag { get; set; }
+        }
 
 
-		public class Blog
-		{
-			public string Id { get; set; }
-			public string Title { get; set; }
-			public BlogTag[] Tags { get; set; }
-		}
-		
-		public class BlogTag 
-		{ 
-			public string Name { get; set; }
-		}
-
-
-	}
+        public class Blog
+        {
+            public string Id { get; set; }
+            public string Title { get; set; }
+            public BlogTag[] Tags { get; set; }
+        }
+        
+        public class BlogTag 
+        { 
+            public string Name { get; set; }
+        }
+    }
 }

@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -25,18 +25,18 @@
 
 namespace Newtonsoft.Json.Tests.TestObjects
 {
-  public class PublicParametizedConstructorWithNonPropertyParameterTestClass
-  {
-    private readonly string _name;
-
-    public PublicParametizedConstructorWithNonPropertyParameterTestClass(string nameParameter)
+    public class PublicParametizedConstructorWithNonPropertyParameterTestClass
     {
-      _name = nameParameter;
-    }
+        private readonly string _name;
 
-    public string Name
-    {
-      get { return _name; }
+        public PublicParametizedConstructorWithNonPropertyParameterTestClass(string nameParameter)
+        {
+            _name = nameParameter;
+        }
+
+        public string Name
+        {
+            get { return _name; }
+        }
     }
-  }
 }

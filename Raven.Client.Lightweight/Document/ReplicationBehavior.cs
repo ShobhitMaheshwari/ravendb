@@ -1,152 +1,176 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 //  <copyright file="ReplicationBehavior.cs" company="Hibernating Rhinos LTD">
 //      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 //  </copyright>
 // -----------------------------------------------------------------------
 using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Abstractions.Data;
-using Raven.Abstractions.Extensions;
+using Raven.Abstractions.Logging;
 using Raven.Abstractions.Replication;
 using Raven.Client.Connection;
-using Raven.Client.Util;
+using Raven.Client.Connection.Async;
 
 namespace Raven.Client.Document
 {
-	using Raven.Abstractions.Connection;
+    using Raven.Abstractions.Connection;
 
-	public class ReplicationBehavior
-	{
-		private readonly DocumentStore documentStore;
+    public class ReplicationBehavior
+    {
+        private readonly DocumentStore documentStore;
 
-		public ReplicationBehavior(DocumentStore documentStore)
-		{
-			this.documentStore = documentStore;
-		}
+        private static readonly ILog log = LogManager.GetCurrentClassLogger();
 
-		/// <summary>
-		/// Represents an replication operation to all destination servers of an item specified by ETag
-		/// </summary>
-		/// <param name="etag">ETag of an replicated item</param>
-		/// <param name="timeout">Optional timeout - by default, 30 seconds</param>
-		/// <param name="database">The database from which to check, if null, the default database for the document store connection string</param>
-		/// <param name="replicas">The min number of replicas that must have the value before we can return (or the number of destinations, if higher)</param>
-		/// <returns>Task which will have the number of nodes that the caught up to the specified etag</returns>
-		public async Task<int> WaitAsync(Etag etag = null, TimeSpan? timeout = null, string database = null, int replicas = 2)
-		{
-			etag = etag ?? documentStore.LastEtagHolder.GetLastWrittenEtag();
-			if (etag == Etag.Empty)
-				return replicas; // if the etag is empty, nothing to do
+        public ReplicationBehavior(DocumentStore documentStore)
+        {
+            this.documentStore = documentStore;
+        }
 
-			var asyncDatabaseCommands = documentStore.AsyncDatabaseCommands;
-			if (database != null)
-				asyncDatabaseCommands = asyncDatabaseCommands.ForDatabase(database);
+        /// <summary>
+        /// Represents an replication operation to all destination servers of an item specified by ETag
+        /// </summary>
+        /// <param name="etag">ETag of an replicated item</param>
+        /// <param name="timeout">Optional timeout - by default, 30 seconds</param>
+        /// <param name="database">The database from which to check, if null, the default database for the document store connection string</param>
+        /// <param name="replicas">The min number of replicas that must have the value before we can return (or the number of destinations, if higher)</param>
+        /// <returns>Task which will have the number of nodes that the caught up to the specified etag</returns>
+        public async Task<int> WaitAsync(Etag etag = null, TimeSpan? timeout = null, string database = null, int replicas = 2)
+        {
+            etag = etag ?? documentStore.LastEtagHolder.GetLastWrittenEtag();
+            if (etag == Etag.Empty || etag == null)
+                return replicas; // if the etag is empty, nothing to do
 
-			asyncDatabaseCommands.ForceReadFromMaster();
+            var asyncDatabaseCommands = (AsyncServerClient)documentStore.AsyncDatabaseCommands;
+            database = database ?? documentStore.DefaultDatabase;
+            asyncDatabaseCommands = (AsyncServerClient)asyncDatabaseCommands.ForDatabase(database);
 
-			var doc = await asyncDatabaseCommands.GetAsync("Raven/Replication/Destinations");
-			if (doc == null)
-				return -1;
+            asyncDatabaseCommands.ForceReadFromMaster();
 
-			var replicationDocument = doc.DataAsJson.JsonDeserialization<ReplicationDocument>();
-			if (replicationDocument == null)
-				return -1;
+            var replicationDocument = await asyncDatabaseCommands.ExecuteWithReplication("GET", operationMetadata => asyncDatabaseCommands.DirectGetReplicationDestinationsAsync(operationMetadata));
+            if (replicationDocument == null)
+                return -1;
 
-			var destinationsToCheck = replicationDocument.Destinations
-			                                             .Where(x => x.Disabled == false && x.IgnoredClient == false)
-			                                             .Select(x => string.IsNullOrEmpty(x.ClientVisibleUrl) ? x.Url.ForDatabase(x.Database) : x.ClientVisibleUrl.ForDatabase(x.Database))
-			                                             .ToList();
+            var destinationsToCheck = replicationDocument.Destinations
+                                                         .Where(x => x.Disabled == false && x.IgnoredClient == false)
+                                                         .Select(x => string.IsNullOrEmpty(x.ClientVisibleUrl) ? x.Url.ForDatabase(x.Database) : x.ClientVisibleUrl.ForDatabase(x.Database))
+                                                         .ToList();
 
 
-			if (destinationsToCheck.Count == 0)
-				return 0;
+            if (destinationsToCheck.Count == 0)
+                return 0;
 
-			int toCheck = Math.Min(replicas, destinationsToCheck.Count);
+            int toCheck = Math.Min(replicas, destinationsToCheck.Count);
 
-		    var cts = new CancellationTokenSource();
-            cts.CancelAfter(timeout ?? TimeSpan.FromSeconds(30));
+            var cts = new CancellationTokenSource();
+            cts.CancelAfter(timeout ?? TimeSpan.FromSeconds(60));
 
-		    var sp = Stopwatch.StartNew();
+            var sp = Stopwatch.StartNew();
 
-			var tasks = destinationsToCheck.Select(url => WaitForReplicationFromServerAsync(url, database, etag, cts.Token)).ToArray();
+            var sourceCommands = documentStore.AsyncDatabaseCommands.ForDatabase(database ?? documentStore.DefaultDatabase);
+            var sourceUrl = documentStore.Url.ForDatabase(database ?? documentStore.DefaultDatabase);
+            var sourceStatistics = await sourceCommands.GetStatisticsAsync(cts.Token);
+            var sourceDbId = sourceStatistics.DatabaseId.ToString();
 
-		
-		    try
-		    {
-#if NET45
+            var latestEtags = new ReplicatedEtagInfo[destinationsToCheck.Count];
+            for (int i = 0; i < destinationsToCheck.Count; i++)
+            {
+                latestEtags[i]= new ReplicatedEtagInfo {DestinationUrl = destinationsToCheck[i]};
+            }
+
+            var tasks = destinationsToCheck.Select((url,index) => WaitForReplicationFromServerAsync(url, sourceUrl, sourceDbId, etag, latestEtags, index, cts.Token)).ToArray();
+
+            try
+            {
                 await Task.WhenAll(tasks);
-#else
-		        await TaskEx.WhenAll(tasks);
-#endif
-		        return tasks.Length;
-		    }
-		    catch (Exception e)
-		    {
-		        var completedCount = tasks.Count(x => x.IsCompleted && x.IsFaulted == false);
-		        if (completedCount >= toCheck)
-		        {
-		            // we have nothing to do here, we replicated to at least the 
+                return tasks.Length;
+            }
+            catch (Exception e)
+            {
+                var successCount = tasks.Count(x => x.IsCompleted && x.IsFaulted == false && x.IsCanceled == false);
+                if (successCount >= toCheck)
+                {
+                    // we have nothing to do here, we replicated to at least the 
                     // number we had to check, so that is good
-			        return completedCount;
-		        }
-			    if (tasks.Any(x => x.IsFaulted) && completedCount == 0)
-			    {
-				    // there was an error here, not just cancellation, let us just let it bubble up.
-				    throw;
-			    }
+                    return successCount;
+                }
+               
+                if (tasks.Any(x => x.IsFaulted) && successCount == 0)
+                {
+                    // there was an error here, not just cancellation, let us just let it bubble up.
+                    throw;
+                }
 
-			    // we have either completed (but not enough) or cancelled, meaning timeout
-		        var message = string.Format("Confirmed that the specified etag {0} was replicated to {1} of {2} servers after {3}", etag,
-		            (toCheck - completedCount),
-		            toCheck,
-                    sp.Elapsed);
+                // we have either completed (but not enough) or cancelled, meaning timeout
+                var message = string.Format("Could only confirm that the specified Etag {0} was replicated to {1} of {2} servers after {3}\r\nDetails: {4}", 
+                    etag,
+                    successCount,
+                    destinationsToCheck.Count,
+                    sp.Elapsed,
+                    string.Join<ReplicatedEtagInfo>("; ", latestEtags));
 
-			    throw new TimeoutException(message, e);
-		    }
-		}
+                if(e is OperationCanceledException)
+                    throw new TimeoutException(message);
 
-		private async Task WaitForReplicationFromServerAsync(string url, string database, Etag etag, CancellationToken cancellationToken)
-		{
-		    while (true)
-		    {
-		        cancellationToken.ThrowIfCancellationRequested();
+                throw new TimeoutException(message, e);
+            }
+        }
 
-		        var etags = await GetReplicatedEtagsFor(url, database);
+        private async Task WaitForReplicationFromServerAsync(string url, string sourceUrl, string sourceDbId, Etag etag, ReplicatedEtagInfo[] latestEtags, int index, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
 
-		        var replicated = etag.CompareTo(etags.DocumentEtag) <= 0 || etag.CompareTo(etags.AttachmentEtag) <= 0;
+                try
+                {
+                    var etags = await GetReplicatedEtagsFor(url, sourceUrl, sourceDbId);
 
-		        if (replicated)
-		            return;
-#if NET45
-			    await Task.Delay(100, cancellationToken);
-#else
-		        await TaskEx.Delay(100, cancellationToken);
-#endif
-		    }
-		}
+                    latestEtags[index] = etags;
 
-	    private async Task<ReplicatedEtagInfo> GetReplicatedEtagsFor(string destinationUrl, string database)
-		{
-			var createHttpJsonRequestParams = new CreateHttpJsonRequestParams(
-				null,
-				destinationUrl.LastReplicatedEtagFor(documentStore.Url.ForDatabase(database ?? documentStore.DefaultDatabase)),
-				"GET",
-				new OperationCredentials(documentStore.ApiKey, documentStore.Credentials), 
-				documentStore.Conventions);
-			var httpJsonRequest = documentStore.JsonRequestFactory.CreateHttpJsonRequest(createHttpJsonRequestParams);
-			var json = await httpJsonRequest.ReadResponseJsonAsync();
+                    var replicated = etag.CompareTo(etags.DocumentEtag) <= 0;
 
-			return new ReplicatedEtagInfo
-			{
-				DestinationUrl = destinationUrl,
-				DocumentEtag = Etag.Parse(json.Value<string>("LastDocumentEtag")),
-				AttachmentEtag = Etag.Parse(json.Value<string>("LastAttachmentEtag"))
-			};
-		}
-	}
+                    if (replicated)
+                        return;
+                }
+                catch (Exception e)
+                {
+                    log.DebugException(string.Format("Failed to get replicated etags for '{0}'.", sourceUrl), e);
+
+                    throw;
+                }
+
+                await Task.Delay(100, cancellationToken);
+            }
+        }
+
+        private async Task<ReplicatedEtagInfo> GetReplicatedEtagsFor(string destinationUrl, string sourceUrl, string sourceDbId)
+        {
+            var createHttpJsonRequestParams = new CreateHttpJsonRequestParams(
+                null,
+                destinationUrl.LastReplicatedEtagFor(sourceUrl, sourceDbId),
+                "GET",
+                new OperationCredentials(documentStore.ApiKey, documentStore.Credentials), 
+                documentStore.Conventions);
+
+            using (var request = documentStore.JsonRequestFactory.CreateHttpJsonRequest(createHttpJsonRequestParams))
+            {
+                var json = await request.ReadResponseJsonAsync();
+                var etag = Etag.Parse(json.Value<string>("LastDocumentEtag"));
+
+                if ( log.IsDebugEnabled )
+                {
+                    log.Debug("Received last replicated document Etag {0} from server {1}", etag, destinationUrl);
+                }
+                                
+                return new ReplicatedEtagInfo
+                {
+                    DestinationUrl = destinationUrl,
+                    DocumentEtag = etag 
+                };
+            }
+        }
+    }
 }

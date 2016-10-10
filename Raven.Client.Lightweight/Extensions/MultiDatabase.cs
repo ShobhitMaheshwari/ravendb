@@ -1,76 +1,114 @@
 using System;
 using System.IO;
-using System.Linq;
 using System.Text.RegularExpressions;
 using Raven.Abstractions.Data;
-using Raven.Json.Linq;
+using Raven.Abstractions.FileSystem;
 
 namespace Raven.Client.Extensions
 {
-	///<summary>
-	/// Methods to create multitenant databases
-	///</summary>
-	internal static class MultiDatabase
-	{
-		public static RavenJObject CreateDatabaseDocument(string name)
-		{
-			AssertValidName(name);
-			if (name.Equals(Constants.SystemDatabase, StringComparison.OrdinalIgnoreCase))
-				return RavenJObject.FromObject(new DatabaseDocument { Id = Constants.SystemDatabase });
+    ///<summary>
+    /// Methods to create multitenant databases
+    ///</summary>
+    public static class MultiDatabase
+    {
+        public static DatabaseDocument CreateDatabaseDocument(string name)
+        {
+            AssertValidName(name);
+            if (name.Equals(Constants.SystemDatabase, StringComparison.OrdinalIgnoreCase))
+                return new DatabaseDocument { Id = Constants.SystemDatabase };
 
-			var doc = RavenJObject.FromObject(new DatabaseDocument
-			                                          	{
-															Id = name,
-			                                          		Settings =
-			                                          			{
-			                                          				{"Raven/DataDir", Path.Combine("~", Path.Combine("Databases", name))}
-			                                          			}
-			                                          	});
-			return doc;
-		}
+            return new DatabaseDocument
+            {
+                Id = "Raven/Databases/" + name,
+                Settings =
+                {
+                    {"Raven/DataDir", Path.Combine("~", name)},
+                }
+            };
+        }
 
-		private static readonly string validDbNameChars = @"([A-Za-z0-9_\-\.]+)";
+        public static FileSystemDocument CreateFileSystemDocument(string name)
+        {
+            AssertValidName(name);
 
-		private static void AssertValidName(string name)
-		{
-			if (name == null) throw new ArgumentNullException("name");
+            return new FileSystemDocument
+            {
+                Id = Constants.FileSystem.Prefix + name,
+                Settings =
+                {
+                    {Constants.FileSystem.DataDirectory, Path.Combine("~", "FileSystems", name) },
+                }
+            };
+        }
 
-			if (!name.Equals(Constants.SystemDatabase,StringComparison.OrdinalIgnoreCase))
-			{
-				var result = Regex.Matches(name, validDbNameChars);
-				if (result.Count == 0 || result[0].Value != name)
-				{
-					throw new InvalidOperationException(
-						"Database name can only contain only A-Z, a-z, \"_\", \".\" or \"-\" but was: " + name);
-				}
-			}
-		}
+        private const string ValidDbNameChars = @"([A-Za-z0-9_\-\.]+)";
 
-		public static string GetRootDatabaseUrl(string url)
-		{
-			var databaseUrl = url;
-			var indexOfDatabases = databaseUrl.IndexOf("/databases/", StringComparison.Ordinal);
-			if (indexOfDatabases != -1)
-				databaseUrl = databaseUrl.Substring(0, indexOfDatabases);
-			if (databaseUrl.EndsWith("/"))
-				return databaseUrl.Substring(0, databaseUrl.Length - 1);
-			return databaseUrl;
-		}
+        internal static void AssertValidName(string name)
+        {
+            if (name == null) throw new ArgumentNullException("name");
 
-		public static string GetDatabaseName(string url)
-		{
-			if (url == null)
-				return null;
+            if (name.Equals(Constants.SystemDatabase, StringComparison.OrdinalIgnoreCase))
+                return;
 
-			var databaseUrl = url;
-			var indexOfDatabases = databaseUrl.IndexOf("/databases/", StringComparison.Ordinal);
-			if (indexOfDatabases != -1)
-			{
-				databaseUrl = databaseUrl.Substring(indexOfDatabases  + "/databases/".Length);
-				return Regex.Match(databaseUrl, validDbNameChars).Value;
-			}
+            var result = Regex.Matches(name, ValidDbNameChars);
+            if (result.Count == 0 || result[0].Value != name)
+            {
+                throw new InvalidOperationException(
+                    "Database name can only contain only A-Z, a-z, \"_\", \".\" or \"-\" but was: " + name);
+            }
+        }
 
-			return Constants.SystemDatabase;
-		}
-	}
+        /// <summary>
+        ///  Returns database url (system or non-system) based on system or non-system DB url.
+        /// </summary>
+        /// <param name="url"></param>
+        /// <param name="database">The database name.</param>
+        /// <returns></returns>
+        public static string GetDatabaseUrl(string url, string database)
+        {
+            if (database == Constants.SystemDatabase)
+            {
+                return GetRootDatabaseUrl(url);
+            }
+            return GetRootDatabaseUrl(url) + "/databases/" + database + "/";
+        }
+
+        public static string GetRootDatabaseUrl(string url)
+        {
+            var databaseUrl = url;
+            var indexOfDatabases = databaseUrl.IndexOf("/databases/", StringComparison.OrdinalIgnoreCase);
+            if (indexOfDatabases != -1)
+                databaseUrl = databaseUrl.Substring(0, indexOfDatabases);
+            if (databaseUrl.EndsWith("/"))
+                return databaseUrl.Substring(0, databaseUrl.Length - 1);
+            return databaseUrl;
+        }
+
+        public static string GetRootFileSystemUrl(string url)
+        {
+            var fileSystemUrl = url;
+            var indexOfDatabases = fileSystemUrl.IndexOf("/fs/", StringComparison.OrdinalIgnoreCase);
+            if (indexOfDatabases != -1)
+                fileSystemUrl = fileSystemUrl.Substring(0, indexOfDatabases);
+            if (fileSystemUrl.EndsWith("/"))
+                return fileSystemUrl.Substring(0, fileSystemUrl.Length - 1);
+            return fileSystemUrl;
+        }
+
+        public static string GetDatabaseName(string url)
+        {
+            if (url == null)
+                return null;
+
+            var databaseUrl = url;
+            var indexOfDatabases = databaseUrl.IndexOf("/databases/", StringComparison.OrdinalIgnoreCase);
+            if (indexOfDatabases != -1)
+            {
+                databaseUrl = databaseUrl.Substring(indexOfDatabases + "/databases/".Length);
+                return Regex.Match(databaseUrl, ValidDbNameChars).Value;
+            }
+
+            return Constants.SystemDatabase;
+        }
+    }
 }

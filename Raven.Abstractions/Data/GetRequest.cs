@@ -4,28 +4,47 @@ using Raven.Imports.Newtonsoft.Json;
 
 namespace Raven.Abstractions.Data
 {
-	public class GetRequest
-	{
-		public string Url { get; set; }
-		public IDictionary<string,string> Headers { get; set; }
-		public string Query { get; set; }
+    public class GetRequest
+    {
+        /// <summary>
+        /// Request url (relative).
+        /// </summary>
+        public string Url { get; set; }
 
-		[JsonIgnore]
-		public string UrlAndQuery
-		{
-			get
-			{
-				if (Query == null)
-					return Url;
-				if (Query.StartsWith("?"))
-					return Url + Query;
-				return Url + "?" + Query;
-			}
-		}
+        /// <summary>
+        /// Request headers.
+        /// </summary>
+        public IDictionary<string, string> Headers { get; set; }
 
-		public GetRequest()
-		{
-			Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		}
-	}
+        /// <summary>
+        /// Query information e.g. "?pageStart=10&amp;pageSize=20".
+        /// </summary>
+        public string Query { get; set; }
+        
+        public string Method { get; set; }
+
+        /// <summary>
+        /// Concatenated Url and Query.
+        /// </summary>
+        [JsonIgnore]
+        public string UrlAndQuery
+        {
+            get
+            {
+                if (Query == null)
+                    return Url;
+                
+                if (Query.StartsWith("?"))
+                    return Url + Query;
+                return Url + "?" + Query;
+            }
+        }
+
+        public string Content { get; set; }
+
+        public GetRequest()
+        {
+            Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+    }
 }

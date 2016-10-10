@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -26,23 +26,26 @@
 using System;
 using System.Runtime.Serialization;
 
-#if !PocketPC && !NET20
-namespace Raven.Imports.Newtonsoft.Json.Tests.TestObjects
-{
-  [DataContract]
-  public class Computer
-  {
-    // included in JSON
-    [DataMember]
-    public string Name { get; set; }
-    [DataMember]
-    public decimal SalePrice { get; set; }
+#if !NET20
 
-    // ignored
-    public string Manufacture { get; set; }
-    public int StockCount { get; set; }
-    public decimal WholeSalePrice { get; set; }
-    public DateTime NextShipmentDate { get; set; }
-  }
+namespace Newtonsoft.Json.Tests.TestObjects
+{
+    [DataContract]
+    public class Computer
+    {
+        // included in JSON
+        [DataMember]
+        public string Name { get; set; }
+
+        [DataMember]
+        public decimal SalePrice { get; set; }
+
+        // ignored
+        public string Manufacture { get; set; }
+        public int StockCount { get; set; }
+        public decimal WholeSalePrice { get; set; }
+        public DateTime NextShipmentDate { get; set; }
+    }
 }
+
 #endif

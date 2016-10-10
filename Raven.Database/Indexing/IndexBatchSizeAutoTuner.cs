@@ -1,47 +1,86 @@
 using System;
-using Raven.Database.Config;
 using System.Linq;
 using System.Collections.Generic;
 
 namespace Raven.Database.Indexing
 {
-	public class IndexBatchSizeAutoTuner : BaseBatchSizeAutoTuner
-	{
-		public IndexBatchSizeAutoTuner(WorkContext context)
-			: base(context)
-		{
-		}
+    public class IndexBatchSizeAutoTuner : BaseBatchSizeAutoTuner
+    {
+        public IndexBatchSizeAutoTuner(WorkContext context)
+            : base(context)
+        {
+            LastAmountOfItemsToRemember = 1;
+            InstallGauges();
+        }
 
-		protected override int InitialNumberOfItems
-		{
-			get { return context.Configuration.InitialNumberOfItemsToIndexInSingleBatch; }
-		}
+        private void InstallGauges()
+        {
+            var metricCounters = context.MetricsCounters;
+            metricCounters.AddGauge(typeof(IndexBatchSizeAutoTuner), "InitialNumberOfItems", () => InitialNumberOfItems);
+            metricCounters.AddGauge(typeof(IndexBatchSizeAutoTuner), "MaxNumberOfItems", () => MaxNumberOfItems);
+            metricCounters.AddGauge(typeof(IndexBatchSizeAutoTuner), "CurrentNumberOfItems", () => CurrentNumberOfItems);
+        }
 
-		protected override int MaxNumberOfItems
-		{
-			get { return context.Configuration.MaxNumberOfItemsToIndexInSingleBatch; }
-		}
+        protected override int InitialNumberOfItems
+        {
+            get { return context.Configuration.InitialNumberOfItemsToProcessInSingleBatch; }
+        }
 
-		protected override int CurrentNumberOfItems
-		{
-			get { return context.CurrentNumberOfItemsToIndexInSingleBatch; }
-			set { context.CurrentNumberOfItemsToIndexInSingleBatch = value; }
-		}
+        protected override int MaxNumberOfItems
+        {
+            get { return context.Configuration.MaxNumberOfItemsToProcessInSingleBatch; }
+        }
 
-		protected override int LastAmountOfItemsToRemember
-		{
-			get { return context.Configuration.IndexingScheduler.LastAmountOfItemsToIndexToRemember; }
-			set { context.Configuration.IndexingScheduler.LastAmountOfItemsToIndexToRemember = value; }
-		}
+        protected override int CurrentNumberOfItems
+        {
+            get { return context.CurrentNumberOfItemsToIndexInSingleBatch; }
+            set { context.CurrentNumberOfItemsToIndexInSingleBatch = value; }
+        }
+        
+        protected override sealed int LastAmountOfItemsToRemember { get; set; }
 
-		protected override void RecordAmountOfItems(int numberOfItems)
-		{
-			context.Configuration.IndexingScheduler.RecordAmountOfItemsToIndex(numberOfItems);
-		}
+        private List<int> lastAmountOfItemsToIndex = new List<int>();
 
-		protected override IEnumerable<int> GetLastAmountOfItems()
-		{
-			return context.Configuration.IndexingScheduler.GetLastAmountOfItemsToIndex();
-		}
-	}
+        protected override void RecordAmountOfItems(int numberOfItems)
+        {
+            var currentLastAmountOfItemsToIndex = lastAmountOfItemsToIndex;
+
+            var amountToTake = currentLastAmountOfItemsToIndex.Count;
+            
+            if (amountToTake + 1 >= LastAmountOfItemsToRemember)
+                amountToTake = currentLastAmountOfItemsToIndex.Count - 1;
+
+            lastAmountOfItemsToIndex = new List<int>(currentLastAmountOfItemsToIndex.Take(amountToTake))
+                                        {
+                                            numberOfItems
+                                        };
+        }
+
+        protected override IEnumerable<int> GetLastAmountOfItems()
+        {
+            return lastAmountOfItemsToIndex;
+        }
+
+        protected override string GetName
+        {
+            get { return "IndexBatchSizeAutoTuner"; }
+        }
+
+        public Action ConsiderLimitingNumberOfItemsToProcessForThisBatch(int? maxIndexOutputsPerDoc, bool containsMapReduceIndexes)
+        {
+            if (maxIndexOutputsPerDoc == null || maxIndexOutputsPerDoc <= (containsMapReduceIndexes ? context.Configuration.MaxMapReduceIndexOutputsPerDocument : context.Configuration.MaxSimpleIndexOutputsPerDocument))
+                return null;
+
+            var oldValue = NumberOfItemsToProcessInSingleBatch;
+
+            var newValue = Math.Max(NumberOfItemsToProcessInSingleBatch / (maxIndexOutputsPerDoc.Value / 2), InitialNumberOfItems);
+
+            if (oldValue == newValue)
+                return null;
+
+            NumberOfItemsToProcessInSingleBatch = newValue;
+
+            return () => NumberOfItemsToProcessInSingleBatch = oldValue;
+        }
+    }
 }

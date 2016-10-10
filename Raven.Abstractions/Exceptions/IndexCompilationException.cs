@@ -1,16 +1,47 @@
-﻿using System;
+using System;
 using System.Runtime.Serialization;
 using Raven.Abstractions.Extensions;
 
 namespace Raven.Abstractions.Exceptions
 {
+
+    [Serializable]
     public class IndexCompilationException : Exception
     {
-        public IndexCompilationException(string message) : base(message)
+        //
+        // For guidelines regarding the creation of new exception types, see
+        //    http://msdn.microsoft.com/library/default.asp?url=/library/en-us/cpgenref/html/cpconerrorraisinghandlingguidelines.asp
+        // and
+        //    http://msdn.microsoft.com/library/default.asp?url=/library/en-us/dncscol/html/csharp07192001.asp
+        //
+
+        public IndexCompilationException()
         {
         }
 
-        public IndexCompilationException(string message, Exception innerException) : base(message, innerException)
+        public IndexCompilationException(string message)
+            : base(message)
+        {
+        }
+
+        public IndexCompilationException(string message, Exception inner)
+            : base(message, inner)
+        {
+        }
+
+        /// <summary>
+        /// Indicates which property caused error (Maps, Reduce).
+        /// </summary>
+        public string IndexDefinitionProperty { get; set; }
+
+        /// <summary>
+        /// Value of a problematic property.
+        /// </summary>
+        public string ProblematicText { get; set; }
+        protected IndexCompilationException(
+            SerializationInfo info,
+            StreamingContext context)
+            : base(info, context)
         {
         }
 
@@ -22,9 +53,5 @@ namespace Raven.Abstractions.Exceptions
                                               IndexDefinitionProperty,
                                               ProblematicText));
         }
-
-        public string IndexDefinitionProperty { get; set; }
-
-        public string ProblematicText { get; set; }
     }
 }

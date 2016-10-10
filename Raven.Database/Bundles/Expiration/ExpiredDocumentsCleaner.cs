@@ -6,11 +6,11 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
-using System.Globalization;
 using System.Linq;
 using System.Threading;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Indexing;
 using Raven.Abstractions.Logging;
 using Raven.Database;
@@ -20,117 +20,131 @@ using Raven.Database.Plugins;
 
 namespace Raven.Bundles.Expiration
 {
-	[InheritedExport(typeof(IStartupTask))]
-	[ExportMetadata("Bundle", "documentExpiration")]
-	public class ExpiredDocumentsCleaner : IStartupTask, IDisposable
-	{
-		public const string RavenDocumentsByExpirationDate = "Raven/DocumentsByExpirationDate";
-		private readonly ILog logger = LogManager.GetCurrentClassLogger();
-		private Timer timer;
-		public DocumentDatabase Database { get; set; }
+    [InheritedExport(typeof(IStartupTask))]
+    [ExportMetadata("Bundle", "documentExpiration")]
+    public class ExpiredDocumentsCleaner : IStartupTask, IDisposable
+    {
+        public const string RavenDocumentsByExpirationDate = "Raven/DocumentsByExpirationDate";
+        private readonly ILog logger = LogManager.GetCurrentClassLogger();
+        public DocumentDatabase Database { get; set; }
 
-		private volatile bool executing;
-
-		public void Execute(DocumentDatabase database)
-		{
-			Database = database;
+        public void Execute(DocumentDatabase database)
+        {
+            Database = database;
 
 
-			var indexDefinition = database.GetIndexDefinition(RavenDocumentsByExpirationDate);
-			if (indexDefinition == null)
-			{
-				database.PutIndex(RavenDocumentsByExpirationDate,
-								  new IndexDefinition
-								  {
-									  Map =
-										  @"
-	from doc in docs
-	let expiry = doc[""@metadata""][""Raven-Expiration-Date""]
-	where expiry != null
-	select new { Expiry = expiry }
+            var indexDefinition = database.Indexes.GetIndexDefinition(RavenDocumentsByExpirationDate);
+            if (indexDefinition == null)
+            {
+                database.Indexes.PutIndex(RavenDocumentsByExpirationDate,
+                                  new IndexDefinition
+                                  {
+                                      Map =
+                                          @"
+    from doc in docs
+    let expiry = doc[""@metadata""][""Raven-Expiration-Date""]
+    where expiry != null
+    select new { Expiry = expiry }
 "
-								  });
-			}
+                                  });
+            }
 
-			var deleteFrequencyInSeconds = database.Configuration.GetConfigurationValue<int>("Raven/Expiration/DeleteFrequencySeconds") ?? 300;
-			logger.Info("Initialized expired document cleaner, will check for expired documents every {0} seconds",
-						deleteFrequencyInSeconds);
-			timer = new Timer(TimerCallback, null, TimeSpan.FromSeconds(deleteFrequencyInSeconds), TimeSpan.FromSeconds(deleteFrequencyInSeconds));
+            var deleteFrequencyInSeconds = database.Configuration.GetConfigurationValue<int>("Raven/Expiration/DeleteFrequencySeconds") ?? 300;
+            logger.Info("Initialized expired document cleaner, will check for expired documents every {0} seconds",
+                        deleteFrequencyInSeconds);
 
-		}
+            timer = database.TimerManager.NewTimer(state => TimerCallback(), TimeSpan.FromSeconds(deleteFrequencyInSeconds), TimeSpan.FromSeconds(deleteFrequencyInSeconds));
+        }
 
-		private void TimerCallback(object state)
-		{
-			if (executing)
-				return;
+        private object locker = new object();
+        private Timer timer;
 
-			executing = true;
-			try
-			{
-				DateTime currentTime = SystemTime.UtcNow;
-				string nowAsStr = currentTime.ToString(Default.DateTimeFormatsToWrite, CultureInfo.InvariantCulture);
-				logger.Debug("Trying to find expired documents to delete");
-				var query = "Expiry:[* TO " + nowAsStr + "]";
+        public bool TimerCallback()
+        {
+            if (Database.Disposed)
+            {
+                return false;
+            }
 
-				var list = new List<string>();
-				int start = 0;
-				while (true)
-				{
-					const int pageSize = 1024;
+            if (Monitor.TryEnter(locker) == false)
+                return false;
 
-					QueryResultWithIncludes queryResult;
-					using(var cts = new CancellationTokenSource())
-					using (Database.DisableAllTriggersForCurrentThread())
-					{
-						cts.TimeoutAfter(TimeSpan.FromMinutes(5));
-						queryResult = Database.Query(RavenDocumentsByExpirationDate, new IndexQuery
-						{
-							Start = start,
-							PageSize = pageSize,
-							Cutoff = currentTime,
-							Query = query,
-							FieldsToFetch = new[] { "__document_id" }
-						}, cts.Token);
-					}
+            try
+            {
+                DateTime currentTime = SystemTime.UtcNow;
+                string nowAsStr = currentTime.GetDefaultRavenFormat();
+                logger.Debug("Trying to find expired documents to delete");
+                var query = "Expiry:[* TO " + nowAsStr + "]";
 
-					if(queryResult.Results.Count == 0)
-						break;
+                var list = new List<string>();
+                int start = 0;
+                while (true)
+                {
+                    const int pageSize = 1024;
 
-					start += pageSize;
+                    QueryResultWithIncludes queryResult;
+                    using (var cts = new CancellationTokenSource())
+                    using (Database.DisableAllTriggersForCurrentThread())
+                    using (cts.TimeoutAfter(TimeSpan.FromMinutes(5)))
+                    {
+                        queryResult = Database.Queries.Query(RavenDocumentsByExpirationDate, new IndexQuery
+                        {
+                            Start = start,
+                            PageSize = pageSize,
+                            Cutoff = currentTime,
+                            Query = query,
+                            FieldsToFetch = new[] { "__document_id" }
+                        }, cts.Token);
+                    }
 
-					list.AddRange(queryResult.Results.Select(result => result.Value<string>("__document_id")).Where(x=>string.IsNullOrEmpty(x) == false));
-				}
+                    if (queryResult.Results.Count == 0)
+                        break;
 
-				if (list.Count == 0)
-					return;
+                    list.AddRange(queryResult.Results.Select(result => result.Value<string>("__document_id")).Where(x => string.IsNullOrEmpty(x) == false));
 
-				logger.Debug(
-					() => string.Format("Deleting {0} expired documents: [{1}]", list.Count, string.Join(", ", list)));
+                    if (queryResult.Results.Count < pageSize)
+                        break;
 
-				foreach (var id in list)
-				{
-					Database.Delete(id, null, null);
-				}
-			}
-			catch (Exception e)
-			{
-				logger.ErrorException("Error when trying to find expired documents", e);
-			}
-			finally
-			{
-				executing = false;
-			}
+                    start += pageSize;
 
-		}
+                    if (Database.Disposed)
+                        return false;
+                }
 
-		/// <summary>
-		/// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
-		/// </summary>
-		/// <filterpriority>2</filterpriority>
-		public void Dispose()
-		{
-			if (timer != null)
-				timer.Dispose();
-		}
-	}
+                if (list.Count == 0)
+                    return true;
+
+                logger.Debug(
+                    () => string.Format("Deleting {0} expired documents: [{1}]", list.Count, string.Join(", ", list)));
+
+                foreach (var id in list)
+                {
+                    Database.Documents.Delete(id, null, null);
+
+                    if (Database.Disposed)
+                        return false;
+                }
+            }
+            catch (Exception e)
+            {
+                logger.ErrorException("Error when trying to find expired documents", e);
+            }
+            finally
+            {
+                Monitor.Exit(locker);
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
+        /// </summary>
+        /// <filterpriority>2</filterpriority>
+        public void Dispose()
+        {
+            if(timer != null)
+                Database.TimerManager.ReleaseTimer(timer);
+            timer = null;
+        }
+    }
 }

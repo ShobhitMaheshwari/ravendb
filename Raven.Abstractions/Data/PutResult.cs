@@ -7,20 +7,19 @@ using System;
 
 namespace Raven.Abstractions.Data
 {
-	/// <summary>
-	/// The result of a PUT operation
-	/// </summary>
-	public class PutResult
-	{
-		/// <summary>
-		/// Gets or sets the key.
-		/// </summary>
-		/// <value>The key.</value>
-		public string Key { get; set; }
-		/// <summary>
-		/// Gets or sets the generated Etag for the PUT operation
-		/// </summary>
-		/// <value>The Etag.</value>
-		public Etag ETag { get; set; }
-	}
+    /// <summary>
+    /// The result of a PUT operation
+    /// </summary>
+    public class PutResult
+    {
+        /// <summary>
+        /// Key of the document that was PUT.
+        /// </summary>
+        public string Key { get; set; }
+
+        /// <summary>
+        /// Etag of the document after PUT operation.
+        /// </summary>
+        public Etag ETag { get; set; }
+    }
 }

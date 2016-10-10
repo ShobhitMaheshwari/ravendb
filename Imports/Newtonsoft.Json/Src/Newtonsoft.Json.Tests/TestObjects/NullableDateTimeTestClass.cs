@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -23,7 +23,7 @@
 // OTHER DEALINGS IN THE SOFTWARE.
 #endregion
 
-#if !PocketPC && !NET20
+#if !NET20
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -31,12 +31,13 @@ using System.Text;
 
 namespace Raven.Imports.Newtonsoft.Json.Tests.TestObjects
 {
-  public class NullableDateTimeTestClass
-  {
-    public string PreField { get; set; }
-    public DateTime? DateTimeField { get; set; }
-    public DateTimeOffset? DateTimeOffsetField { get; set; }
-    public string PostField { get; set; }
-  }
+    public class NullableDateTimeTestClass
+    {
+        public string PreField { get; set; }
+        public DateTime? DateTimeField { get; set; }
+        public DateTimeOffset? DateTimeOffsetField { get; set; }
+        public string PostField { get; set; }
+    }
 }
+
 #endif

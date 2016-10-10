@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -25,35 +25,35 @@
 
 using System;
 
-namespace Raven.Imports.Newtonsoft.Json.Tests.TestObjects
+namespace Newtonsoft.Json.Tests.TestObjects
 {
-  public class PublicParametizedConstructorWithPropertyNameConflict
-  {
-    private readonly int _value;
-
-    public PublicParametizedConstructorWithPropertyNameConflict(string name)
+    public class PublicParametizedConstructorWithPropertyNameConflict
     {
-      _value = Convert.ToInt32(name);
+        private readonly int _value;
+
+        public PublicParametizedConstructorWithPropertyNameConflict(string name)
+        {
+            _value = Convert.ToInt32(name);
+        }
+
+        public int Name
+        {
+            get { return _value; }
+        }
     }
 
-    public int Name
+    public class PublicParametizedConstructorWithPropertyNameConflictWithAttribute
     {
-      get { return _value; }
-    }
-  }
+        private readonly int _value;
 
-  public class PublicParametizedConstructorWithPropertyNameConflictWithAttribute
-  {
-    private readonly int _value;
+        public PublicParametizedConstructorWithPropertyNameConflictWithAttribute([JsonProperty("name")] string nameParameter)
+        {
+            _value = Convert.ToInt32(nameParameter);
+        }
 
-    public PublicParametizedConstructorWithPropertyNameConflictWithAttribute([JsonProperty("name")]string nameParameter)
-    {
-      _value = Convert.ToInt32(nameParameter);
+        public int Name
+        {
+            get { return _value; }
+        }
     }
-
-    public int Name
-    {
-      get { return _value; }
-    }
-  }
 }

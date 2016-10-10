@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -23,7 +23,7 @@
 // OTHER DEALINGS IN THE SOFTWARE.
 #endregion
 
-#if !(NET35 || NET20 || PORTABLE)
+#if !(NET35 || NET20 || PORTABLE || DNXCORE50)
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -38,12 +38,16 @@ using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Linq;
-#if !NETFX_CORE
-using NUnit.Framework;
-#else
+#if NETFX_CORE
 using Microsoft.VisualStudio.TestPlatform.UnitTestFramework;
 using TestFixture = Microsoft.VisualStudio.TestPlatform.UnitTestFramework.TestClassAttribute;
 using Test = Microsoft.VisualStudio.TestPlatform.UnitTestFramework.TestMethodAttribute;
+#elif DNXCORE50
+using Xunit;
+using Test = Xunit.FactAttribute;
+using Assert = Newtonsoft.Json.Tests.XUnitAssert;
+#else
+using NUnit.Framework;
 #endif
 using Newtonsoft.Json.Serialization;
 using Newtonsoft.Json.Tests.Serialization;
@@ -53,112 +57,123 @@ using System.Globalization;
 
 namespace Newtonsoft.Json.Tests.Documentation
 {
-  [TestFixture]
-  public class TraceWriterTests : TestFixtureBase
-  {
     public class LogEventInfo
     {
-      public LogLevel Level;
-      public string Message;
-      public Exception Exception;
+        public LogLevel Level;
+        public string Message;
+        public Exception Exception;
     }
 
     public class LogLevel
     {
-      public static LogLevel Info;
-      public static LogLevel Trace;
-      public static LogLevel Error;
-      public static LogLevel Warn;
-      public static LogLevel Off;
+        public static LogLevel Info;
+        public static LogLevel Trace;
+        public static LogLevel Error;
+        public static LogLevel Warn;
+        public static LogLevel Off;
     }
 
     public class Logger
     {
-      public void Log(LogEventInfo logEvent)
-      { 
-      }
+        public void Log(LogEventInfo logEvent)
+        {
+        }
     }
 
     public static class LogManager
     {
-      public static Logger GetLogger(string className)
-      {
-        return new Logger();
-      }
-    }
-
-    #region CustomTraceWriterExample
-    public class NLogTraceWriter : ITraceWriter
-    {
-      private static readonly Logger Logger = LogManager.GetLogger("NLogTraceWriter");
-
-      public TraceLevel LevelFilter
-      {
-        // trace all messages. nlog can handle filtering
-        get { return TraceLevel.Verbose; }
-      }
-
-      public void Trace(TraceLevel level, string message, Exception ex)
-      {
-        LogEventInfo logEvent = new LogEventInfo
+        public static Logger GetLogger(string className)
         {
-          Message = message,
-          Level = GetLogLevel(level),
-          Exception = ex
-        };
-
-        // log Json.NET message to NLog
-        Logger.Log(logEvent);
-      }
-
-      private LogLevel GetLogLevel(TraceLevel level)
-      {
-        switch (level)
-        {
-          case TraceLevel.Error:
-            return LogLevel.Error;
-          case TraceLevel.Warning:
-            return LogLevel.Warn;
-          case TraceLevel.Info:
-            return LogLevel.Info;
-          case TraceLevel.Off:
-            return LogLevel.Off;
-          default:
-            return LogLevel.Trace;
+            return new Logger();
         }
-      }
     }
-    #endregion
 
-    [Test]
-    public void MemoryTraceWriterTest()
+    [TestFixture]
+    public class TraceWriterTests : TestFixtureBase
     {
-      #region MemoryTraceWriterExample
-      Staff staff = new Staff();
-      staff.Name = "Arnie Admin";
-      staff.Roles = new List<string> { "Administrator" };
-      staff.StartDate = DateTime.Now;
+        #region CustomTraceWriterExample
+        public class NLogTraceWriter : ITraceWriter
+        {
+            private static readonly Logger Logger = LogManager.GetLogger("NLogTraceWriter");
 
-      ITraceWriter traceWriter = new MemoryTraceWriter();
+            public TraceLevel LevelFilter
+            {
+                // trace all messages. nlog can handle filtering
+                get { return TraceLevel.Verbose; }
+            }
 
-      JsonConvert.SerializeObject(
-        staff,
-        new JsonSerializerSettings { TraceWriter = traceWriter, Converters = { new JavaScriptDateTimeConverter() } });
+            public void Trace(TraceLevel level, string message, Exception ex)
+            {
+                LogEventInfo logEvent = new LogEventInfo
+                {
+                    Message = message,
+                    Level = GetLogLevel(level),
+                    Exception = ex
+                };
 
-      Console.WriteLine(traceWriter);
-      // 2012-11-11T12:08:42.761 Info Started serializing Newtonsoft.Json.Tests.Serialization.Staff. Path ''.
-      // 2012-11-11T12:08:42.785 Info Started serializing System.DateTime with converter Newtonsoft.Json.Converters.JavaScriptDateTimeConverter. Path 'StartDate'.
-      // 2012-11-11T12:08:42.791 Info Finished serializing System.DateTime with converter Newtonsoft.Json.Converters.JavaScriptDateTimeConverter. Path 'StartDate'.
-      // 2012-11-11T12:08:42.797 Info Started serializing System.Collections.Generic.List`1[System.String]. Path 'Roles'.
-      // 2012-11-11T12:08:42.798 Info Finished serializing System.Collections.Generic.List`1[System.String]. Path 'Roles'.
-      // 2012-11-11T12:08:42.799 Info Finished serializing Newtonsoft.Json.Tests.Serialization.Staff. Path ''.
-      #endregion
+                // log Json.NET message to NLog
+                Logger.Log(logEvent);
+            }
 
-      MemoryTraceWriter memoryTraceWriter = (MemoryTraceWriter)traceWriter;
+            private LogLevel GetLogLevel(TraceLevel level)
+            {
+                switch (level)
+                {
+                    case TraceLevel.Error:
+                        return LogLevel.Error;
+                    case TraceLevel.Warning:
+                        return LogLevel.Warn;
+                    case TraceLevel.Info:
+                        return LogLevel.Info;
+                    case TraceLevel.Off:
+                        return LogLevel.Off;
+                    default:
+                        return LogLevel.Trace;
+                }
+            }
+        }
+        #endregion
 
-      Assert.AreEqual(743, memoryTraceWriter.ToString().Length);
-      Assert.AreEqual(6, memoryTraceWriter.GetTraceMessages().Count());
+        [Test]
+        public void MemoryTraceWriterTest()
+        {
+            #region MemoryTraceWriterExample
+            Staff staff = new Staff();
+            staff.Name = "Arnie Admin";
+            staff.Roles = new List<string> { "Administrator" };
+            staff.StartDate = new DateTime(2000, 12, 12, 12, 12, 12, DateTimeKind.Utc);
+
+            ITraceWriter traceWriter = new MemoryTraceWriter();
+
+            JsonConvert.SerializeObject(
+                staff,
+                new JsonSerializerSettings { TraceWriter = traceWriter, Converters = { new JavaScriptDateTimeConverter() } });
+
+            Console.WriteLine(traceWriter);
+            // 2012-11-11T12:08:42.761 Info Started serializing Newtonsoft.Json.Tests.Serialization.Staff. Path ''.
+            // 2012-11-11T12:08:42.785 Info Started serializing System.DateTime with converter Newtonsoft.Json.Converters.JavaScriptDateTimeConverter. Path 'StartDate'.
+            // 2012-11-11T12:08:42.791 Info Finished serializing System.DateTime with converter Newtonsoft.Json.Converters.JavaScriptDateTimeConverter. Path 'StartDate'.
+            // 2012-11-11T12:08:42.797 Info Started serializing System.Collections.Generic.List`1[System.String]. Path 'Roles'.
+            // 2012-11-11T12:08:42.798 Info Finished serializing System.Collections.Generic.List`1[System.String]. Path 'Roles'.
+            // 2012-11-11T12:08:42.799 Info Finished serializing Newtonsoft.Json.Tests.Serialization.Staff. Path ''.
+            // 2013-05-18T21:38:11.255 Verbose Serialized JSON: 
+            // {
+            //   "Name": "Arnie Admin",
+            //   "StartDate": new Date(
+            //     976623132000
+            //   ),
+            //   "Roles": [
+            //     "Administrator"
+            //   ]
+            // }
+            #endregion
+
+            MemoryTraceWriter memoryTraceWriter = (MemoryTraceWriter)traceWriter;
+
+            Assert.AreEqual(916, memoryTraceWriter.ToString().Length);
+            Assert.AreEqual(7, memoryTraceWriter.GetTraceMessages().Count());
+        }
     }
-  }
 }
+
 #endif

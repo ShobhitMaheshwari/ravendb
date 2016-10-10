@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -26,15 +26,30 @@
 using System;
 using System.Collections.Generic;
 
-namespace Raven.Imports.Newtonsoft.Json.Tests.TestObjects
+namespace Newtonsoft.Json.Tests.TestObjects
 {
-  public class Movie
-  {
-    public string Name { get; set; }
-    public string Description { get; set; }
-    public string Classification { get; set; }
-    public string Studio { get; set; }
-    public DateTime? ReleaseDate { get; set; }
-    public List<string> ReleaseCountries { get; set; }
-  }
+    public class Movie
+    {
+        public string Name { get; set; }
+        public string Description { get; set; }
+        public string Classification { get; set; }
+        public string Studio { get; set; }
+        public DateTime? ReleaseDate { get; set; }
+        public List<string> ReleaseCountries { get; set; }
+
+        public override string ToString()
+        {
+            return base.ToString();
+        }
+
+        public override bool Equals(object obj)
+        {
+            return base.Equals(obj);
+        }
+
+        public override int GetHashCode()
+        {
+            return base.GetHashCode();
+        }
+    }
 }

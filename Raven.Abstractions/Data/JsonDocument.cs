@@ -5,119 +5,132 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Globalization;
+using Raven.Abstractions.Extensions;
 using Raven.Json.Linq;
+using System.Runtime.CompilerServices;
 
 namespace Raven.Abstractions.Data
 {
-	/// <summary>
-	/// A document representation:
-	/// * Data / Projection
-	/// * Etag
-	/// * Metadata
-	/// </summary>
-	public class JsonDocument : IJsonDocumentMetadata
-	{
-		/// <summary>
-		/// Create a new instance of JsonDocument
-		/// </summary>
-		public JsonDocument()
-		{
-		}
+    /// <summary>
+    /// A document representation:
+    /// * Data / Projection
+    /// * Etag
+    /// * Metadata
+    /// </summary>
+    public class JsonDocument : IJsonDocumentMetadata
+    {
+        /// <summary>
+        /// Create a new instance of JsonDocument
+        /// </summary>
+        public JsonDocument()
+        {
+        }
 
-		private RavenJObject dataAsJson;
-		private RavenJObject metadata;
+        private RavenJObject dataAsJson;
+        private RavenJObject metadata;
 
-		/// <summary>
-		/// Gets or sets the document data as json.
-		/// </summary>
-		/// <value>The data as json.</value>
-		public RavenJObject DataAsJson
-		{
-			get { return dataAsJson ?? (dataAsJson = new RavenJObject()); }
-			set { dataAsJson = value; }
-		}
+        /// <summary>
+        /// Document data or projection as json.
+        /// </summary>
+        public RavenJObject DataAsJson
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get { return dataAsJson ?? (dataAsJson = new RavenJObject()); }
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            set { dataAsJson = value; }
+        }
 
-		/// <summary>
-		/// Gets or sets the metadata for the document
-		/// </summary>
-		/// <value>The metadata.</value>
-		public RavenJObject Metadata
-		{
-			get { return metadata ?? (metadata = new RavenJObject(StringComparer.OrdinalIgnoreCase)); }
-			set { metadata = value; }
-		}
+        /// <summary>
+        /// Metadata for the document
+        /// </summary>		
+        public RavenJObject Metadata
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get { return metadata ?? (metadata = new RavenJObject(StringComparer.OrdinalIgnoreCase)); }
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            set { metadata = value; }
+        }
 
-		/// <summary>
-		/// Gets or sets the key for the document
-		/// </summary>
-		/// <value>The key.</value>
-		public string Key { get; set; }
+        /// <summary>
+        /// Key for the document
+        /// </summary>
+        public string Key { get; set; }
 
-		/// <summary>
-		/// Gets or sets a value indicating whether this document is non authoritative (modified by uncommitted transaction).
-		/// </summary>
-		public bool? NonAuthoritativeInformation { get; set; }
+        /// <summary>
+        /// Indicates whether this document is non authoritative (modified by uncommitted transaction).
+        /// </summary>
+        public bool? NonAuthoritativeInformation { get; set; }
 
-		/// <summary>
-		/// Gets or sets the etag.
-		/// </summary>
-		/// <value>The etag.</value>
-		public Etag Etag { get; set; }
+        /// <summary>
+        /// Current document etag.
+        /// </summary>
+        public Etag Etag { get; set; }
 
-		/// <summary>
-		/// Gets or sets the last modified date for the document
-		/// </summary>
-		/// <value>The last modified.</value>
-		public DateTime? LastModified { get; set; }
+        /// <summary>
+        /// Last modified date for the document
+        /// </summary>
+        public DateTime? LastModified { get; set; }
 
-		/// <summary>
-		/// The ranking of this result in the current query
-		/// </summary>
-		public float? TempIndexScore { get; set; }
+        /// <summary>
+        /// The ranking of this result in the current query
+        /// </summary>
+        public float? TempIndexScore { get; set; }
 
-		/// <summary>
-		/// How much space this document takes on disk
-		/// Only relevant during indexing phases, and not available on the client
-		/// </summary>
-		public int SerializedSizeOnDisk;
+        /// <summary>
+        /// How much space this document takes on disk
+        /// Only relevant during indexing phases, and not available on the client
+        /// </summary>
+        public int SerializedSizeOnDisk;
 
-		/// <summary>
-		/// Whatever this document can be skipped from delete
-		/// Only relevant during indexing phases, and not available on the client
-		/// </summary>
-		public bool SkipDeleteFromIndex;
+        /// <summary>
+        /// Whatever this document can be skipped from delete
+        /// Only relevant during indexing phases, and not available on the client
+        /// </summary>
+        public bool SkipDeleteFromIndex;
 
-		/// <summary>
-		/// Translate the json document to a <see cref = "RavenJObject" />
-		/// </summary>
-		/// <returns></returns>
-		public RavenJObject ToJson()
-		{
-			DataAsJson.EnsureCannotBeChangeAndEnableSnapshotting();
-			Metadata.EnsureCannotBeChangeAndEnableSnapshotting();
+        /// <summary>
+        /// Translate the json document to a <see cref = "RavenJObject" />
+        /// </summary>
+        public RavenJObject ToJson(bool checkForId = false)
+        {
+            DataAsJson.EnsureCannotBeChangeAndEnableSnapshotting();
+            Metadata.EnsureCannotBeChangeAndEnableSnapshotting();
 
-			var doc = (RavenJObject)DataAsJson.CreateSnapshot();
-			var metadata = (RavenJObject)Metadata.CreateSnapshot();
+            var doc = (RavenJObject)DataAsJson.CreateSnapshot();
+            var metadata = (RavenJObject)Metadata.CreateSnapshot();
 
-			if (LastModified != null)
-			{
-				metadata[Constants.LastModified] = LastModified.Value;
-				metadata[Constants.RavenLastModified] = LastModified.Value.ToString(Default.DateTimeFormatsToWrite, CultureInfo.InvariantCulture);
-			}
-			if (Etag != null)
-				metadata["@etag"] = Etag.ToString();
-			if (NonAuthoritativeInformation != null)
-				metadata["Non-Authoritative-Information"] = NonAuthoritativeInformation.Value;
-			//if (metadata.ContainsKey("@id") == false)
-			//	metadata["@id"] = Key;
-			doc["@metadata"] = metadata;
+            if (LastModified != null)
+            {
+                metadata[Constants.LastModified] = LastModified.Value;
+                metadata[Constants.RavenLastModified] = LastModified.Value.GetDefaultRavenFormat();
+            }
+            if (Etag != null)
+                metadata["@etag"] = Etag.ToString();
+            if (NonAuthoritativeInformation != null)
+                metadata["Non-Authoritative-Information"] = NonAuthoritativeInformation.Value;
+            if (checkForId && metadata.ContainsKey("@id") == false)
+                metadata["@id"] = Key;
+            doc["@metadata"] = metadata;
 
-			return doc;
-		}
+            return doc;
+        }
 
-		public override string ToString()
-		{
-			return Key;
-		}
-	}
+        public override string ToString()
+        {
+            return Key;
+        }
+
+        public static void EnsureIdInMetadata(IJsonDocumentMetadata doc)
+        {
+            if (doc == null || doc.Metadata == null)
+                return;
+
+            if (doc.Metadata.IsSnapshot)
+            {
+                doc.Metadata = (RavenJObject)doc.Metadata.CreateSnapshot();
+            }
+
+            doc.Metadata["@id"] = doc.Key;
+        }
+    }
 }

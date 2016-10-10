@@ -3,6 +3,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+
+using Raven.Tests.Common;
+
 using Xunit;
 
 namespace Raven.Tests.Bugs
@@ -19,7 +22,7 @@ namespace Raven.Tests.Bugs
         public class CountResult
         {
             public string Group {get; set;}
-        	public int Count {get; set;}
+            public int Count {get; set;}
         }
         
         public class Index : AbstractIndexCreationTask<Widget, CountResult>
@@ -44,13 +47,13 @@ namespace Raven.Tests.Bugs
             }
         }
 
-		[Fact]
-		public void NoIndexingErrors()
-		{
-			using (var store = NewDocumentStore())
-			{
-        		using (var session = store.OpenSession())
-				{
+        [Fact]
+        public void NoIndexingErrors()
+        {
+            using (var store = NewDocumentStore())
+            {
+                using (var session = store.OpenSession())
+                {
                     for (int i = 0; i < 100; i++)
                     {
                         session.Store( new Widget() { Long = null } );
@@ -61,14 +64,14 @@ namespace Raven.Tests.Bugs
                     session.Store(new Widget() { Long = 3, Group = "B" });
                     session.Store(new Widget() { Long = 4, Group = "A" });
 
-					session.SaveChanges();
-				}
+                    session.SaveChanges();
+                }
 
                 store.ExecuteIndex( new Index() );
 
-				WaitForIndexing(store);
+                WaitForIndexing(store);
 
-				Assert.Empty(store.DocumentDatabase.Statistics.Errors);
+                Assert.Empty(store.SystemDatabase.Statistics.Errors);
 
                 using (var session = store.OpenSession())
                 {
@@ -77,8 +80,8 @@ namespace Raven.Tests.Bugs
                     Assert.NotEmpty(counts );
                 }
 
-			}
-		}
+            }
+        }
 
     }
 }

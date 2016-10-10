@@ -6,42 +6,27 @@
 
 using System;
 using System.Net;
-
-#if SILVERLIGHT
-using Raven.Client.Silverlight.Connection;
-#endif
+using System.Net.Http;
 
 namespace Raven.Abstractions.Connection
 {
-	/// <summary>
-	/// Event arguments for the event of creating a <see cref="WebRequest"/>
-	/// </summary>
-	public class WebRequestEventArgs : EventArgs
-	{
-#if NETFX_CORE
+    /// <summary>
+    /// Event arguments for the event of creating a <see cref="WebRequest"/>
+    /// </summary>
+    public class WebRequestEventArgs : EventArgs
+    {
+        /// <summary>
+        /// Gets or sets the web request.
+        /// </summary>
+        /// <value>The request.</value>
+        public HttpClient Client { get; set; }
 
-		/// <summary>
-		/// Gets or sets the web request.
-		/// </summary>
-		/// <value>The request.</value>
-		public System.Net.Http.HttpClient Client { get; set; }
+        /// <summary>
+        /// Gets or sets the web request.
+        /// </summary>
+        /// <value>The request.</value>
+        public WebRequest Request { get; set; }
 
-#else
-
-		/// <summary>
-		/// Gets or sets the web request.
-		/// </summary>
-		/// <value>The request.</value>
-		public WebRequest Request { get; set; }
-#endif
-
-#if SILVERLIGHT
-	/// <summary>
-	/// The RavenDB json request
-	/// </summary>
-		public HttpJsonRequest JsonRequest { get; set; }
-#endif
-
-		public OperationCredentials Credentials { get; set; }
-	}
+        public OperationCredentials Credentials { get; set; }
+    }
 }

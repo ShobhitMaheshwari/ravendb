@@ -9,23 +9,32 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using Raven.Database.Linq;
-using Raven.Database.Storage;
-using System.Linq;
+using Raven.Database.Util;
 
 namespace Raven.Database.Indexing
 {
     public class RobustEnumerator
-    {
-        public Action BeforeMoveNext = delegate { };
-        public Action CancelMoveNext = delegate { };
-        public Action<Exception, object> OnError = delegate { };
+    {        
+        private readonly Action BeforeMoveNext = () => { };
+        private readonly Action CancelMoveNext = () => { };
+        private readonly Action<Exception, object> OnError = (_,__) => { };
+
         private readonly CancellationToken cancellationToken;
         private readonly int numberOfConsecutiveErrors;
 
-        public RobustEnumerator(CancellationToken cancellationToken, int numberOfConsecutiveErrors)
+        public Stopwatch MoveNextDuration = null;
+
+        public RobustEnumerator(CancellationToken cancellationToken, int numberOfConsecutiveErrors, Action beforeMoveNext = null, Action cancelMoveNext = null, Action<Exception,object> onError = null )
         {
             this.cancellationToken = cancellationToken;
             this.numberOfConsecutiveErrors = numberOfConsecutiveErrors;
+
+            if (beforeMoveNext != null)
+                BeforeMoveNext = beforeMoveNext;
+            if (cancelMoveNext != null)
+                CancelMoveNext = cancelMoveNext;
+            if (onError != null)
+                OnError = onError;
         }
 
         public IEnumerable<object> RobustEnumeration(IEnumerator<object> input, IndexingFunc func)
@@ -68,11 +77,11 @@ namespace Raven.Database.Indexing
             if (funcs.Count == 1)
             {
                 foreach (var item in RobustEnumeration(input, funcs[0]))
-                {
                     yield return item;                    
-                }
+
                 yield break;
             }
+
             var onlyIterateOverEnumableOnce = new List<object>();
             try
             {
@@ -98,20 +107,23 @@ namespace Raven.Database.Indexing
 
         private bool? MoveNext(IEnumerator en, StatefulEnumerableWrapper<object> innerEnumerator)
         {
-            try
+            using (StopwatchScope.For(MoveNextDuration))
             {
-                BeforeMoveNext();
-                var moveNext = en.MoveNext();
-                if (moveNext == false)
+                try
                 {
-                    CancelMoveNext();
+                    BeforeMoveNext();
+                    var moveNext = en.MoveNext();
+                    if (moveNext == false)
+                        CancelMoveNext();
+
+                    return moveNext;
                 }
-                return moveNext;
+                catch (Exception e)
+                {
+                    OnError(e, innerEnumerator.Current);
+                }
             }
-            catch (Exception e)
-            {
-                OnError(e, innerEnumerator.Current);
-            }
+
             return null;
         }
     }

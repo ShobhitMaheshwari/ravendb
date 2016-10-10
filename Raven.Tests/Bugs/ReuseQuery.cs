@@ -4,26 +4,28 @@
 // </copyright>
 //-----------------------------------------------------------------------
 using Raven.Client;
+using Raven.Tests.Common;
+
 using Xunit;
 using System.Linq;
 
 namespace Raven.Tests.Bugs
 {
-	public class ReuseQuery : RavenTest
-	{
-		[Fact]
-		public void CanReuseQuery()
-		{
-			using(var store = NewDocumentStore())
-			{
-				using(var session = store.OpenSession())
-				{
-					var query = session.Query<object>();
+    public class ReuseQuery : RavenTest
+    {
+        [Fact]
+        public void CanReuseQuery()
+        {
+            using(var store = NewDocumentStore())
+            {
+                using(var session = store.OpenSession())
+                {
+                    var query = session.Query<object>();
 
-					query.Count();
-					query.ToList();
-				}
-			}
-		}
-	}
+                    query.Count();
+                    query.ToList();
+                }
+            }
+        }
+    }
 }

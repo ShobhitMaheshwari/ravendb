@@ -1,70 +1,73 @@
 using System;
-using System.Linq;
-#if !SILVERLIGHT
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Raven.Database.Util
 {
-	public class SizeLimitedConcurrentSet<T>
-	{
-		private readonly ConcurrentDictionary<T, object> dic;
-		private readonly ConcurrentQueue<T> queue = new ConcurrentQueue<T>();
+    public class SizeLimitedConcurrentSet<T>
+    {
+        private readonly ConcurrentDictionary<T, object> dic;
 
-		private readonly int size;
+        private readonly ConcurrentQueue<T> queue = new ConcurrentQueue<T>();
 
-		public SizeLimitedConcurrentSet(int size = 100)
-			: this(size, EqualityComparer<T>.Default)
-		{
+        private readonly int size;
 
-		}
+        public SizeLimitedConcurrentSet(int size = 100)
+            : this(size, EqualityComparer<T>.Default)
+        {
 
-		public SizeLimitedConcurrentSet(int size, IEqualityComparer<T> equalityComparer)
-		{
-			this.size = size;
-			dic = new ConcurrentDictionary<T, object>(equalityComparer);
-		}
+        }
 
-	    public int Count { get { return queue.Count; }}
+        public SizeLimitedConcurrentSet(int size, IEqualityComparer<T> equalityComparer)
+        {
+            this.size = size;
+            dic = new ConcurrentDictionary<T, object>(equalityComparer);
+        }
 
-	    public bool Add(T item)
-		{
-			if (dic.TryAdd(item, null) == false)
-				return false;
-			queue.Enqueue(item);
+        public int Count
+        {
+            get
+            {
+                return queue.Count;
+            }
+        }
 
-			while (queue.Count > size)
-			{
-				T result;
-				if (queue.TryDequeue(out result) == false)
-					break;
-				object value;
-				dic.TryRemove(result, out value);
-			}
+        public bool Add(T item)
+        {
+            if (dic.TryAdd(item, null) == false) return false;
+            queue.Enqueue(item);
 
-			return true;
-		}
+            while (queue.Count > size)
+            {
+                T result;
+                if (queue.TryDequeue(out result) == false) break;
+                object value;
+                dic.TryRemove(result, out value);
+            }
 
-		public bool TryRemove(T item)
-		{
-			object value;
-			return dic.TryRemove(item, out value);
-		}
+            return true;
+        }
 
-		public bool Contains(T item)
-		{
-			return dic.ContainsKey(item);
-		}
+        public bool TryRemove(T item)
+        {
+            object value;
+            return dic.TryRemove(item, out value);
+        }
 
-		public T[] ToArray()
-		{
-			return queue.ToArray();
-		}
+        public bool Contains(T item)
+        {
+            return dic.ContainsKey(item);
+        }
 
-	    public TAccumolate Aggregate<TAccumolate>(TAccumolate seed, Func<TAccumolate, T, TAccumolate> aggregate)
-	    {
-	        return queue.Aggregate(seed, aggregate);
-	    }
-	}
+        public T[] ToArray()
+        {
+            return queue.ToArray();
+        }
+
+        public TAccumolate Aggregate<TAccumolate>(TAccumolate seed, Func<TAccumolate, T, TAccumolate> aggregate)
+        {
+            return queue.Aggregate(seed, aggregate);
+        }
+    }
 }
-#endif

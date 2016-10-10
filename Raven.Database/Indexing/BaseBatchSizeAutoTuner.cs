@@ -1,35 +1,72 @@
 using System;
 using System.Collections.Concurrent;
-using System.Runtime.Remoting.Contexts;
-using Lucene.Net.Util;
-using Microsoft.VisualBasic.CompilerServices;
-using Mono.CSharp;
+using System.Runtime.CompilerServices;
 using Raven.Abstractions;
 using Raven.Database.Config;
 using System.Linq;
 using System.Collections.Generic;
 
+using Raven.Database.Storage;
+using Raven.Database.Util;
+
 namespace Raven.Database.Indexing
 {
-    public abstract class BaseBatchSizeAutoTuner
+    using Raven.Abstractions.Util;
+
+    public abstract class BaseBatchSizeAutoTuner : ILowMemoryHandler, ITransactionalStorageNotificationHandler
     {
         protected readonly WorkContext context;
 
         private int currentNumber;
-        private readonly ConcurrentDictionary<Guid, long> currentlyUsedBatchSizes;
 
         private DateTime lastIncrease;
-        private readonly long memoryLimitForIndexingInBytes;
+        private readonly ConcurrentDictionary<Guid, long> _currentlyUsedBatchSizesInBytes;
+
+        private readonly int maximumSizeAllowedToFetchFromStorageInMb;
 
         protected BaseBatchSizeAutoTuner(WorkContext context)
         {
             this.context = context;
-            NumberOfItemsToIndexInSingleBatch = InitialNumberOfItems;
-            currentlyUsedBatchSizes = new ConcurrentDictionary<Guid, long>();
-            memoryLimitForIndexingInBytes = context.Configuration.MemoryLimitForIndexingInMB * 1024 * 1024;
+            FetchingDocumentsFromDiskTimeout = TimeSpan.FromSeconds(context.Configuration.Prefetcher.FetchingDocumentsFromDiskTimeoutInSeconds);
+            maximumSizeAllowedToFetchFromStorageInMb = context.Configuration.Prefetcher.MaximumSizeAllowedToFetchFromStorageInMb;
+// ReSharper disable once DoNotCallOverridableMethodsInConstructor
+            NumberOfItemsToProcessInSingleBatch = InitialNumberOfItems;
+            MemoryStatistics.RegisterLowMemoryHandler(this);
+            context.TransactionalStorage.RegisterTransactionalStorageNotificationHandler(this);
+            _currentlyUsedBatchSizesInBytes = new ConcurrentDictionary<Guid, long>();
         }
 
-        public int NumberOfItemsToIndexInSingleBatch
+    
+        public void HandleLowMemory()
+        {
+            ReduceBatchSizeIfCloseToMemoryCeiling(true);
+        }
+
+        public void SoftMemoryRelease()
+        {
+            
+        }
+
+        public void HandleTransactionalStorageNotification()
+        {
+            HandleLowMemory();
+        }
+
+        public virtual LowMemoryHandlerStatistics GetStats()
+        {
+            return new LowMemoryHandlerStatistics
+            {
+                EstimatedUsedMemory = 0,
+                Name = GetName,
+                DatabaseName = context.DatabaseName,
+                Metadata = new
+                {
+                    BatchSize = NumberOfItemsToProcessInSingleBatch
+                }
+            };
+        }
+
+        public int NumberOfItemsToProcessInSingleBatch
         {
             get { return currentNumber; }
             set
@@ -38,32 +75,33 @@ namespace Raven.Database.Indexing
             }
         }
 
-        public void AutoThrottleBatchSize(int amountOfItemsToIndex, long size, TimeSpan indexingDuration)
+        [MethodImpl(MethodImplOptions.Synchronized)]
+        public void AutoThrottleBatchSize(int amountOfItemsToProcess, long size, TimeSpan processingDuration)
         {
             try
             {
                 if (ReduceBatchSizeIfCloseToMemoryCeiling())
                     return;
-                if (ConsiderDecreasingBatchSize(amountOfItemsToIndex, indexingDuration))
+                if (ConsiderDecreasingBatchSize(amountOfItemsToProcess, processingDuration))
                     return;
-                if (ConsiderIncreasingBatchSize(amountOfItemsToIndex, size, indexingDuration))
+                if (ConsiderIncreasingBatchSize(amountOfItemsToProcess, size, processingDuration))
                     lastIncrease = SystemTime.UtcNow;
             }
             finally
             {
-                RecordAmountOfItems(amountOfItemsToIndex);
+                RecordAmountOfItems(amountOfItemsToProcess);
             }
         }
 
-        private bool ConsiderIncreasingBatchSize(int amountOfItemsToIndex, long size, TimeSpan indexingDuration)
+        private bool ConsiderIncreasingBatchSize(int amountOfItemsToProcess, long size, TimeSpan processingDuration)
         {
             //if we are using too much memory for indexing, do not even consider to increase batch size
-            if (amountOfItemsToIndex < NumberOfItemsToIndexInSingleBatch || CurrentlyUsedBatchSizes.Values.Sum() > memoryLimitForIndexingInBytes)
+            if (amountOfItemsToProcess < NumberOfItemsToProcessInSingleBatch || CurrentlyUsedBatchSizesInBytes.Values.Sum() > context.Configuration.DynamicMemoryLimitForProcessing)
             {
                 return false;
             }
 
-            if (GetLastAmountOfItems().Any(x => x < NumberOfItemsToIndexInSingleBatch))
+            if (GetLastAmountOfItems().Any(x => x < NumberOfItemsToProcessInSingleBatch))
             {
                 // this is the first time we hit the limit, we will give another go before we increase
                 // the batch size
@@ -84,46 +122,74 @@ namespace Raven.Database.Indexing
             // Because of the way we are executing indexes, only N are running at once, where N is the parallel level, so we take
             // that into account, you may have 10 indexes but only 2 CPUs, so we only consider the cost of executing 2 indexes,
             // not all 10
-            var sizedPlusIndexingCost = sizeInMegabytes * (1 + (0.25 * Math.Min(context.IndexDefinitionStorage.IndexesCount, context.Configuration.MaxNumberOfParallelIndexTasks)));
+            var sizedPlusIndexingCost = sizeInMegabytes * (1 + (0.25 * Math.Min(context.IndexDefinitionStorage.IndexesCount, context.Configuration.MaxNumberOfParallelProcessingTasks)));
 
-            var remainingMemoryAfterBatchSizeIncrease = MemoryStatistics.AvailableMemory - sizedPlusIndexingCost;
+            var remainingMemoryAfterBatchSizeIncrease = MemoryStatistics.AvailableMemoryInMb - sizedPlusIndexingCost;
 
-            if (remainingMemoryAfterBatchSizeIncrease < context.Configuration.AvailableMemoryForRaisingIndexBatchSizeLimit)
+            if (remainingMemoryAfterBatchSizeIncrease < context.Configuration.AvailableMemoryForRaisingBatchSizeLimit)
                 return false;
 
             // here we assume that the next batch would be 175% as long as the current one
             // and there is no point in trying if we are just going to blow out past our max latency
-            var timeSpan = indexingDuration.Add(TimeSpan.FromMilliseconds(indexingDuration.TotalMilliseconds * 0.75));
-            if (timeSpan > context.Configuration.MaxIndexingRunLatency)
+            var timeSpan = processingDuration.Add(TimeSpan.FromMilliseconds(processingDuration.TotalMilliseconds * 0.75));
+            if (timeSpan > context.Configuration.MaxProcessingRunLatency)
                 return false;
 
-            NumberOfItemsToIndexInSingleBatch = Math.Min(MaxNumberOfItems,
-                                                         NumberOfItemsToIndexInSingleBatch * 2);
+            // We want to aggressively increase the size while it is small, but once we hit a certain
+            // size, we don't want to just double it. It is easy to create major issues that way.
+            // as long as we are less than 25% of the max size, we can double it until we hit that limit
+            int maybeNewSize = NumberOfItemsToProcessInSingleBatch * 2;
+            // if we are more than 25% of the size, we want to grow more slowly, we'll grow my 1/8 of the 
+            // max number of items
+            //
+            // For the details, that means that we'll double the sizes until we get to 32K items, then increase
+            // it by 16K each time we need to increase. That is much more gradual and will let us more time to 
+            // see if we don't want to increase things.
+            if (maybeNewSize > MaxNumberOfItems/4)
+            {
+                var stepSize = MaxNumberOfItems / 8;
+                if (stepSize < InitialNumberOfItems)
+                    stepSize = InitialNumberOfItems;
+                maybeNewSize = NumberOfItemsToProcessInSingleBatch + stepSize;
+            }
+
+
+            NumberOfItemsToProcessInSingleBatch = Math.Min(MaxNumberOfItems,
+                                                         maybeNewSize);
             return true;
         }
 
-        public long MaximumSizeAllowedToFetchFromStorage
+        public TimeSpan FetchingDocumentsFromDiskTimeout { get; private set; }
+
+        public long MaximumSizeAllowedToFetchFromStorageInBytes
         {
             get
             {
                 // we take just a bit more to account for indexing costs as well
-                var sizeToKeepFree = context.Configuration.AvailableMemoryForRaisingIndexBatchSizeLimit * 1.33;
-                // if we just loaded > 128 MB to index, that is big enough for right now
+                var sizeToKeepFree = context.Configuration.AvailableMemoryForRaisingBatchSizeLimit * 1.33;
+                // if we just loaded > 256 MB to index, that is big enough for right now
                 // remember, this value refer to just the data on disk, not including
                 // the memory to do the actual indexing
-                double sizeInMB = Math.Min(128, Math.Max(8, MemoryStatistics.AvailableMemory - sizeToKeepFree));
-                return (long)sizeInMB * 1024 * 1024;
+                double sizeInMb = Math.Min(maximumSizeAllowedToFetchFromStorageInMb, Math.Max(8, MemoryStatistics.AvailableMemoryInMb - sizeToKeepFree));
+                return (long)sizeInMb * 1024 * 1024;
             }
         }
 
-        private bool ReduceBatchSizeIfCloseToMemoryCeiling()
-        {			
-            if (MemoryStatistics.AvailableMemory >= context.Configuration.AvailableMemoryForRaisingIndexBatchSizeLimit ||
-				IsIndexingUsingTooMuchMemory)
+        public bool IsProcessingUsingTooMuchMemory
+        {
+            get
             {
-                // check if we are getting close to the max limit of indexing bytes in a single batch or index is using too much memory, if so,
-                // we need to reduce the batch size
-				return false;
+                return _currentlyUsedBatchSizesInBytes.Values.Sum() * 4 > context.Configuration.DynamicMemoryLimitForProcessing;
+            }
+        }
+
+        private bool ReduceBatchSizeIfCloseToMemoryCeiling(bool forceReducing = false)
+        {
+            if (MemoryStatistics.AvailableMemoryInMb >= context.Configuration.AvailableMemoryForRaisingBatchSizeLimit && forceReducing == false &&
+                IsProcessingUsingTooMuchMemory == false)
+            {
+                // there is enough memory available for the next indexing run
+                return false;
             }
 
             // we are using too much memory, let us use a less next time...
@@ -134,103 +200,97 @@ namespace Raven.Database.Indexing
             // * The system is over the configured limit, and there is a strong likelihood that this is us causing this
             // * By forcing a GC, we ensure that we use less memory, and it is not frequent enough to cause perf problems
 
-            GC.Collect(1, GCCollectionMode.Optimized);
+            RavenGC.ConsiderRunningGC();
 
             // let us check again after the GC call, do we still need to reduce the batch size?
 
-            if (MemoryStatistics.AvailableMemory > context.Configuration.AvailableMemoryForRaisingIndexBatchSizeLimit)
+            if (MemoryStatistics.AvailableMemoryInMb > context.Configuration.AvailableMemoryForRaisingBatchSizeLimit && forceReducing == false)
             {
                 // we don't want to try increasing things, we just hit the ceiling, maybe on the next try
                 return true;
             }
 
             // we are still too high, let us reduce the size and see what is going on.
+            NumberOfItemsToProcessInSingleBatch = CalculateReductionOfItemsInSingleBatch();
 
-            NumberOfItemsToIndexInSingleBatch = Math.Max(InitialNumberOfItems,
-                                                         NumberOfItemsToIndexInSingleBatch / 2);
 
             return true;
         }
 
-        private bool ConsiderDecreasingBatchSize(int amountOfItemsToIndex, TimeSpan indexingDuration)
+        private bool ConsiderDecreasingBatchSize(int amountOfItemsToProcess, TimeSpan processingDuration)
         {
-	        var isIndexingUsingTooMuchMemory = IsIndexingUsingTooMuchMemory;
-	        if (isIndexingUsingTooMuchMemory == false) //skip all other heuristics if indexing takes too much memory
-	        {
-		        if (
-			        // we had as much work to do as we are currently capable of handling,
-			        // we might need to increase, but certainly not decrease the batch size
-			        amountOfItemsToIndex >= NumberOfItemsToIndexInSingleBatch ||
-			        // we haven't gone over the max latency limit, no reason to decrease yet
-			        indexingDuration < context.Configuration.MaxIndexingRunLatency)
-		        {
-			        return false;
-		        }
-
-		        if ((SystemTime.UtcNow - lastIncrease).TotalMinutes < 3)
-			        return true;
-
-		        // we didn't have a lot of work to do, so let us see if we can reduce the batch size
-
-		        // we are at the configured minimum, nothing to do
-		        if (NumberOfItemsToIndexInSingleBatch == InitialNumberOfItems)
-			        return true;
-
-		        // we were above the max/2 the last few times, we can't reduce the work load now
-		        if (GetLastAmountOfItems().Any(x => x > NumberOfItemsToIndexInSingleBatch/2))
-			        return true;
-	        }
-
-	        var old = NumberOfItemsToIndexInSingleBatch;
-
-            var minNumberOfItemsToIndex = InitialNumberOfItems;
-            if (isIndexingUsingTooMuchMemory)
+            var isIndexingUsingTooMuchMemory = IsProcessingUsingTooMuchMemory;
+            if (isIndexingUsingTooMuchMemory == false) //skip all other heuristics if indexing takes too much memory
             {
-                minNumberOfItemsToIndex /= 4;
+                if (
+                    // we had as much work to do as we are currently capable of handling,
+                    // we might need to increase, but certainly not decrease the batch size
+                    amountOfItemsToProcess >= NumberOfItemsToProcessInSingleBatch ||
+                    // we haven't gone over the max latency limit, no reason to decrease yet
+                    processingDuration < context.Configuration.MaxProcessingRunLatency)
+                {
+                    return false;
+                }
+
+                if ((SystemTime.UtcNow - lastIncrease).TotalMinutes < 3)
+                    return true;
+
+                // we didn't have a lot of work to do, so let us see if we can reduce the batch size
+
+                // we are at the configured minimum, nothing to do
+                if (NumberOfItemsToProcessInSingleBatch == InitialNumberOfItems)
+                    return true;
+
+                // we were above the max/2 the last few times, we can't reduce the work load now
+                if (GetLastAmountOfItems().Any(x => x > NumberOfItemsToProcessInSingleBatch/2))
+                    return true;
             }
+
+            var old = NumberOfItemsToProcessInSingleBatch;
+            NumberOfItemsToProcessInSingleBatch = CalculateReductionOfItemsInSingleBatch();
+
+            // we just reduced the batch size because we have two concurrent runs where we had
+            // less to do than the previous runs. That indicate the the busy period is over, maybe we
+            // run out of data? Or the rate of data entry into the system was just reduce?
+            // At any rate, there is a strong likelihood of having a lot of garbage in the system
+            // let us ask the GC nicely to clean it
+
+            // but we only want to do it if the change was significant 
+            if (NumberOfItemsToProcessInSingleBatch - old > 4096)
+            {
+                RavenGC.ConsiderRunningGC();
+            }
+
+            return true;
+        }
+
+        private int CalculateReductionOfItemsInSingleBatch()
+        {
+            var minNumberOfItemsToProcess = InitialNumberOfItems;
+            if (IsProcessingUsingTooMuchMemory)
+                minNumberOfItemsToProcess /= 4;
 
             // we have had a couple of times were we didn't get to the current max, so we can probably
             // reduce the max again now, this will reduce the memory consumption eventually, and will cause 
             // faster indexing times in case we get a big batch again
             // * if indexing is using too much memory --> probably we have very large documents in the index, so let it reduce to 1 if needed
-            NumberOfItemsToIndexInSingleBatch = Math.Max(minNumberOfItemsToIndex, NumberOfItemsToIndexInSingleBatch / 2);
-
-            // we just reduced the batch size because we have two concurrent runs where we had
-            // less to do than the previous runs. That indicate the the busy period is over, maybe we
-            // run out of data? Or the rate of data entry into the system was just reduce?
-            // At any rate, there is a strong likelyhood of having a lot of garbage in the system
-            // let us ask the GC nicely to clean it
-
-            // but we only want to do it if the change was significant 
-            if (NumberOfItemsToIndexInSingleBatch - old > 4096)
-            {				
-                GC.Collect(1, GCCollectionMode.Optimized);
-            }
-
-            return true;
+            return Math.Max(minNumberOfItemsToProcess, NumberOfItemsToProcessInSingleBatch/2);
         }
 
-	    public bool IsIndexingUsingTooMuchMemory
-	    {
-		    get
-		    {
-			    return CurrentlyUsedBatchSizes.Values.Sum() * 4 > memoryLimitForIndexingInBytes;
-		    }
-	    }
-
-	    /// <summary>
+        /// <summary>
         /// This let us know that an OOME has happened, and we need to be much more
         /// conservative with regards to how fast we can grow memory.
         /// </summary>
-        public void OutOfMemoryExceptionHappened()
+        public void HandleOutOfMemory()
         {
-			var newNumberOfItemsToIndex = InitialNumberOfItems;
-			if (IsIndexingUsingTooMuchMemory) //if using too much memory, decrease number of items in each batch
-				newNumberOfItemsToIndex /= 4;
-
+            var newNumberOfItemsToProcess = Math.Min(InitialNumberOfItems, NumberOfItemsToProcessInSingleBatch);
+            if (IsProcessingUsingTooMuchMemory) //if using too much memory, decrease number of items in each batch
+                newNumberOfItemsToProcess /= 4;
+            else
+                newNumberOfItemsToProcess /= 2; // we hit OOME so we should rapidly decrease batch size even when process is not using too much memory
 
             // first thing to do, reset the number of items per batch
-			NumberOfItemsToIndexInSingleBatch = newNumberOfItemsToIndex > 0 ? newNumberOfItemsToIndex : 1;
+            NumberOfItemsToProcessInSingleBatch = newNumberOfItemsToProcess > 0 ? newNumberOfItemsToProcess : 1;
 
             // now, we need to be more conservative about how we are increasing memory usage, so instead of increasing
             // every time we hit the limit twice, we will increase every time we hit it three times, then 5, 9, etc
@@ -243,11 +303,9 @@ namespace Raven.Database.Indexing
         protected abstract int MaxNumberOfItems { get; }
         protected abstract int CurrentNumberOfItems { get; set; }
         protected abstract int LastAmountOfItemsToRemember { get; set; }
-
-        //total size of documents in the batch - for each entry
-        public ConcurrentDictionary<Guid, long> CurrentlyUsedBatchSizes { get { return currentlyUsedBatchSizes; } }
-
+        public ConcurrentDictionary<Guid, long> CurrentlyUsedBatchSizesInBytes { get { return _currentlyUsedBatchSizesInBytes; } }		
         protected abstract void RecordAmountOfItems(int numberOfItems);
         protected abstract IEnumerable<int> GetLastAmountOfItems();
+        protected abstract string GetName { get; }
     }
 }

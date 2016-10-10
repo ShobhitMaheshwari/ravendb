@@ -1,80 +1,86 @@
-﻿using System.Threading;
+using System.Threading;
 using System.Transactions;
 using Raven.Tests.Bugs;
+using Raven.Tests.Common;
+using Raven.Tests.Common.Util;
+
 using Xunit;
 
 namespace Raven.Tests.Track
 {
-	public class RavenDB17 : RavenTest
-	{
-		[Fact]
-		public void CacheRespectInFlightTransaction()
-		{
-			using (var store = NewRemoteDocumentStore())
-			{
-				// Session #1
-				using (var scope = new TransactionScope())
-				using (var session = store.OpenSession())
-				{
-					Transaction.Current.EnlistDurable(ManyDocumentsViaDTC.DummyEnlistmentNotification.Id,
-					                                  new ManyDocumentsViaDTC.DummyEnlistmentNotification(),
-					                                  EnlistmentOptions.None);
+    public class RavenDB17 : RavenTest
+    {
+        [Fact]
+        public void CacheRespectInFlightTransaction()
+        {
+            using (var store = NewRemoteDocumentStore(requestedStorage: "esent"))
+            {
+                if(store.DatabaseCommands.GetStatistics().SupportsDtc == false)
+                    return;
 
-					session.Advanced.UseOptimisticConcurrency = true;
-					session.Advanced.AllowNonAuthoritativeInformation = false;
+                // Session #1
+                using (var scope = new TransactionScope())
+                using (var session = store.OpenSession())
+                {
+                    Transaction.Current.EnlistDurable(DummyEnlistmentNotification.Id,
+                                                      new DummyEnlistmentNotification(),
+                                                      EnlistmentOptions.None);
 
-					session.Store(new SomeDocument {Id = 1, Data = "Data1"});
+                    session.Advanced.UseOptimisticConcurrency = true;
+                    session.Advanced.AllowNonAuthoritativeInformation = false;
 
-					session.SaveChanges();
-					scope.Complete();
-				}
+                    session.Store(new SomeDocument {Id = 1, Data = "Data1"});
 
-				// Session #2
-				using (var scope = new TransactionScope())
-				using (var session = store.OpenSession())
-				{
-					Transaction.Current.EnlistDurable(ManyDocumentsViaDTC.DummyEnlistmentNotification.Id,
-					                                  new ManyDocumentsViaDTC.DummyEnlistmentNotification(),
-					                                  EnlistmentOptions.None);
+                    session.SaveChanges();
+                    scope.Complete();
+                }
 
-					session.Advanced.UseOptimisticConcurrency = true;
-					session.Advanced.AllowNonAuthoritativeInformation = false;
+                // Session #2
+                using (var scope = new TransactionScope())
+                using (var session = store.OpenSession())
+                {
+                    Transaction.Current.EnlistDurable(DummyEnlistmentNotification.Id,
+                                                      new DummyEnlistmentNotification(),
+                                                      EnlistmentOptions.None);
 
-					var doc = session.Load<SomeDocument>(1);
-					Assert.Equal("Data1", doc.Data);
-					
-					doc.Data = "Data2";
+                    session.Advanced.UseOptimisticConcurrency = true;
+                    session.Advanced.AllowNonAuthoritativeInformation = false;
 
-					session.SaveChanges();
-					scope.Complete();
-				}
+                    var doc = session.Load<SomeDocument>(1);
+                    Assert.Equal("Data1", doc.Data);
+                    
+                    doc.Data = "Data2";
 
-				Thread.Sleep(1000); // wait a bit here because a commit operation is done in async manner
+                    session.SaveChanges();
+                    scope.Complete();
+                }
 
-				// Session #3
-				using (var scope = new TransactionScope())
-				using (var session = store.OpenSession())
-				{
-					Transaction.Current.EnlistDurable(ManyDocumentsViaDTC.DummyEnlistmentNotification.Id,
-					                                  new ManyDocumentsViaDTC.DummyEnlistmentNotification(),
-					                                  EnlistmentOptions.None);
+                Thread.Sleep(1000); // wait a bit here because a commit operation is done in async manner
 
-					session.Advanced.UseOptimisticConcurrency = true;
-					session.Advanced.AllowNonAuthoritativeInformation = false;
+                // Session #3
+                using (var scope = new TransactionScope())
+                using (var session = store.OpenSession())
+                {
+                    Transaction.Current.EnlistDurable(DummyEnlistmentNotification.Id,
+                                                      new DummyEnlistmentNotification(),
+                                                      EnlistmentOptions.None);
 
-					var doc = session.Load<SomeDocument>(1);
-					Assert.Equal("Data2", doc.Data);
+                    session.Advanced.UseOptimisticConcurrency = true;
+                    session.Advanced.AllowNonAuthoritativeInformation = false;
 
-					session.SaveChanges();
-					scope.Complete();
-				}
-			}
-		}
+                    var doc = session.Load<SomeDocument>(1);
+                    Assert.Equal("Data2", doc.Data);
 
-		public class SomeDocument
-		{
-			public string Data { get; set; }
-			public int Id { get; set; }
-		}
-	}
+                    session.SaveChanges();
+                    scope.Complete();
+                }
+            }
+        }
+
+        public class SomeDocument
+        {
+            public string Data { get; set; }
+            public int Id { get; set; }
+        }
+    }
 }

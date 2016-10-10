@@ -1,85 +1,110 @@
-#if !SILVERLIGHT && !NETFX_CORE
 using System;
 using System.Collections.Concurrent;
-using System.IO;
 using System.Net;
+
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Extensions;
+using Raven.Abstractions.Logging;
 using Raven.Abstractions.OAuth;
 
 namespace Raven.Abstractions.Connection
 {
-	public class HttpRavenRequestFactory
-	{
-		public int? RequestTimeoutInMs { get; set; }
+    public class HttpRavenRequestFactory
+    {
+        public int? RequestTimeoutInMs { get; set; }
 
-		readonly ConcurrentDictionary<Tuple<string, string>, AbstractAuthenticator> authenticators = new ConcurrentDictionary<Tuple<string, string>, AbstractAuthenticator>();
+        readonly ConcurrentDictionary<Tuple<string, string>, AbstractAuthenticator> authenticators = new ConcurrentDictionary<Tuple<string, string>, AbstractAuthenticator>();
 
-		public void ConfigureRequest(RavenConnectionStringOptions options, WebRequest request)
-		{
-			if (RequestTimeoutInMs.HasValue)
-				request.Timeout = RequestTimeoutInMs.Value;
+        public void ConfigureRequest(RavenConnectionStringOptions options, HttpWebRequest request)
+        {
+            if (RequestTimeoutInMs.HasValue)
+                request.Timeout = RequestTimeoutInMs.Value;
 
-			if (options.ApiKey == null)
-			{
-				request.Credentials = options.Credentials ?? CredentialCache.DefaultNetworkCredentials;
-				return;
-			}
+            if (options.ApiKey == null)
+            {
+                ICredentials credentialsToUse = CredentialCache.DefaultNetworkCredentials;
+                if (options.Credentials != null)
+                {
+                    var networkCredentials = options.Credentials as NetworkCredential;
+                    if (networkCredentials != null && options.AuthenticationScheme != null)
+                    {
+                        var credentialCache = new CredentialCache();
+                        var uri = new Uri(options.Url);
+                        credentialCache.Add(new Uri(string.Format("{0}://{1}:{2}/", uri.Scheme, uri.Host, uri.Port)), options.AuthenticationScheme, networkCredentials);
 
-			var webRequestEventArgs = new WebRequestEventArgs { Request = request, Credentials = new OperationCredentials(options.ApiKey, options.Credentials)};
+                        credentialsToUse = credentialCache;
+                    }
+                    else
+                    {
+                        credentialsToUse = options.Credentials;
+                    }
+                }
 
-			AbstractAuthenticator existingAuthenticator;
-			if (authenticators.TryGetValue(GetCacheKey(options), out existingAuthenticator))
-			{
-				existingAuthenticator.ConfigureRequest(this, webRequestEventArgs);
-			}
-			else
-			{
-				var basicAuthenticator = new BasicAuthenticator(enableBasicAuthenticationOverUnsecuredHttp: false);
-				var securedAuthenticator = new SecuredAuthenticator();
+                request.Credentials = credentialsToUse;
+                return;
+            }
 
-				basicAuthenticator.ConfigureRequest(this, webRequestEventArgs);
-				securedAuthenticator.ConfigureRequest(this, webRequestEventArgs);
-			}
-		}
+            var webRequestEventArgs = new WebRequestEventArgs { Request = request, Credentials = new OperationCredentials(options.ApiKey, options.Credentials)};
 
-		private static Tuple<string, string> GetCacheKey(RavenConnectionStringOptions options)
-		{
-			return Tuple.Create(options.Url, options.ApiKey);
-		}
+            AbstractAuthenticator existingAuthenticator;
+            if (authenticators.TryGetValue(GetCacheKey(options), out existingAuthenticator))
+            {
+                existingAuthenticator.ConfigureRequest(this, webRequestEventArgs);
+            }
+            else
+            {
+                var basicAuthenticator = new BasicAuthenticator(enableBasicAuthenticationOverUnsecuredHttp: false);
+                var securedAuthenticator = new SecuredAuthenticator(autoRefreshToken: false);
 
-		public HttpRavenRequest Create(string url, string method, RavenConnectionStringOptions connectionStringOptions)
-		{
-			return new HttpRavenRequest(url, method, ConfigureRequest, HandleUnauthorizedResponse, connectionStringOptions);
-		}
+                basicAuthenticator.ConfigureRequest(this, webRequestEventArgs);
+                securedAuthenticator.ConfigureRequest(this, webRequestEventArgs);
+            }
+        }
 
-		private Action<HttpWebRequest> HandleUnauthorizedResponse(RavenConnectionStringOptions options, WebResponse webResponse)
-		{
-			if (options.ApiKey == null)
-				return null;
+        private static Tuple<string, string> GetCacheKey(RavenConnectionStringOptions options)
+        {
+            return Tuple.Create(options.Url, options.ApiKey);
+        }
 
-			var oauthSource = webResponse.Headers["OAuth-Source"];
+        public HttpRavenRequest Create(string url, string method, RavenConnectionStringOptions connectionStringOptions, bool? allowWriteStreamBuffering = null)
+        {
+            return new HttpRavenRequest(url, method, ConfigureRequest, HandleUnauthorizedResponse, connectionStringOptions, allowWriteStreamBuffering);
+        }
 
-			var useBasicAuthenticator =
-				string.IsNullOrEmpty(oauthSource) == false &&
-				oauthSource.EndsWith("/OAuth/API-Key", StringComparison.CurrentCultureIgnoreCase) == false;
+        private Action<HttpWebRequest> HandleUnauthorizedResponse(RavenConnectionStringOptions options, WebResponse webResponse)
+        {
+            if (options.ApiKey == null)
+                return null;
 
-			if (string.IsNullOrEmpty(oauthSource))
-				oauthSource = options.Url + "/OAuth/API-Key";
+            var oauthSource = webResponse.Headers["OAuth-Source"];
 
-			var authenticator = authenticators.GetOrAdd(
-				GetCacheKey(options),
-				_ =>
-				{
-					if (useBasicAuthenticator)
-					{
-						return new BasicAuthenticator(enableBasicAuthenticationOverUnsecuredHttp: false);
-					}
+            var useBasicAuthenticator =
+                string.IsNullOrEmpty(oauthSource) == false &&
+                oauthSource.EndsWith("/OAuth/API-Key", StringComparison.CurrentCultureIgnoreCase) == false;
 
-					return new SecuredAuthenticator();
-				});
+            if (string.IsNullOrEmpty(oauthSource))
+                oauthSource = options.Url + "/OAuth/API-Key";
 
-			return authenticator.DoOAuthRequest(oauthSource, options.ApiKey);
-		}
-	}
+            var authenticator = authenticators.GetOrAdd(
+                GetCacheKey(options),
+                _ =>
+                {
+                    if (useBasicAuthenticator)
+                    {
+                        return new BasicAuthenticator(enableBasicAuthenticationOverUnsecuredHttp: false);
+                    }
+
+                    return new SecuredAuthenticator(autoRefreshToken: false);
+                });
+
+            return authenticator.DoOAuthRequest(oauthSource, options.ApiKey);
+        }
+
+        public static IDisposable Expect100Continue(string url)
+        {
+            var servicePoint = ServicePointManager.FindServicePoint(new Uri(url));
+            servicePoint.Expect100Continue = true;
+            return new DisposableAction(() => servicePoint.Expect100Continue = false);
+        }
+    }
 }
-#endif

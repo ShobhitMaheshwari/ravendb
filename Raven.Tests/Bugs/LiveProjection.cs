@@ -11,176 +11,189 @@ using Raven.Client;
 using Raven.Client.Embedded;
 using Raven.Client.Indexes;
 using Raven.Client.Linq;
+using Raven.Tests.Common;
+
 using Xunit;
 
 namespace Raven.Tests.Bugs
 {
-	public class LiveProjection : RavenTest, IDisposable
-	{
-		public LiveProjection()
-		{
-			Store = NewDocumentStore();
-			var purchaseHistoryIndex = new PurchaseHistoryIndex();
-			IDocumentStore documentStore = Store;
-			purchaseHistoryIndex.Execute(documentStore.DatabaseCommands, documentStore.Conventions);
-		}
+    public class LiveProjection : RavenTest, IDisposable
+    {
+        public LiveProjection()
+        {
+            Store = NewDocumentStore();
+            var purchaseHistoryIndex = new PurchaseHistoryIndex();
+            IDocumentStore documentStore = Store;
+            purchaseHistoryIndex.Execute(documentStore.DatabaseCommands, documentStore.Conventions);
 
-		public EmbeddableDocumentStore Store { get; set; }
 
-		[Fact]
-		public void PurchaseHistoryViewReturnsExpectedData()
-		{
-			using (var session = Store.OpenSession())
-			{
-				session.Store(new Product() { Id = "product1", Name = "one" });
-				session.Store(new Product() { Id = "product2", Name = "two" });
-				session.Store(new Product() { Id = "product3", Name = "three" });
+            new PurchaseHistoryTransformer().Execute(Store);
+        }
 
-				session.Store(new Shipment()
-				{
-					UserId = "user1",
-					Items = new List<ShipmentItem>()
-					{
-						new ShipmentItem(){ ProductId = "product1"}
-					}
-				});
-				session.Store(new Shipment()
-				{
-					UserId = "user1",
-					Items = new List<ShipmentItem>()
-					{
-						new ShipmentItem(){ ProductId = "product2"}
-					}
-				});
-				session.Store(new Shipment()
-				{
-					UserId = "user2",
-					Items = new List<ShipmentItem>()
-					{
-						new ShipmentItem(){ ProductId = "product3"}
-					}
-				});
+        public EmbeddableDocumentStore Store { get; set; }
 
-				session.SaveChanges();
+        [Fact]
+        public void PurchaseHistoryViewReturnsExpectedData()
+        {
+            using (var session = Store.OpenSession())
+            {
+                session.Store(new Product() { Id = "product1", Name = "one" });
+                session.Store(new Product() { Id = "product2", Name = "two" });
+                session.Store(new Product() { Id = "product3", Name = "three" });
 
-				session.Query<Shipment, PurchaseHistoryIndex>().Customize(x => x.WaitForNonStaleResults()).Count();
+                session.Store(new Shipment()
+                {
+                    UserId = "user1",
+                    Items = new List<ShipmentItem>()
+                    {
+                        new ShipmentItem(){ ProductId = "product1"}
+                    }
+                });
+                session.Store(new Shipment()
+                {
+                    UserId = "user1",
+                    Items = new List<ShipmentItem>()
+                    {
+                        new ShipmentItem(){ ProductId = "product2"}
+                    }
+                });
+                session.Store(new Shipment()
+                {
+                    UserId = "user2",
+                    Items = new List<ShipmentItem>()
+                    {
+                        new ShipmentItem(){ ProductId = "product3"}
+                    }
+                });
 
-				var results = PurchaseHistoryView.Create(session, "user1");
-				Assert.Equal(2, results.Items.Length);
-				Assert.Equal(1, results.Items.Where(x => x.ProductName == "one").Count());
-				Assert.Equal(1, results.Items.Where(x => x.ProductName == "two").Count());
-			}
-		}
+                session.SaveChanges();
 
-		public class PurchaseHistoryView
-		{
-			public string ShipmentUserId { get; set; }
-			public PurchaseHistoryViewItem[] Items { get; set; }
+                session.Query<Shipment, PurchaseHistoryIndex>().TransformWith<PurchaseHistoryTransformer, Shipment>().Customize(x => x.WaitForNonStaleResults()).Count();
 
-			public static PurchaseHistoryView Create(
-				IDocumentSession documentSession,
-				string userId)
-			{
-				return
-					new PurchaseHistoryView()
-					{
-						Items = documentSession.Query<Shipment, PurchaseHistoryIndex>()
-									.Customize(x => x.WaitForNonStaleResults(TimeSpan.FromMinutes(5)))
-								   .Where(x => x.UserId == userId)
-								   .As<PurchaseHistoryViewItem>()
-								   .ToArray(),
-						ShipmentUserId = userId
-					};
-			}
-		}
+                var results = PurchaseHistoryView.Create(session, "user1");
+                Assert.Equal(2, results.Items.Length);
+                Assert.Equal(1, results.Items.Where(x => x.ProductName == "one").Count());
+                Assert.Equal(1, results.Items.Where(x => x.ProductName == "two").Count());
+            }
+        }
 
-		public override void Dispose()
-		{
-			Store.Dispose();
-			base.Dispose();
-		}
+        public class PurchaseHistoryView
+        {
+            public string ShipmentUserId { get; set; }
+            public PurchaseHistoryViewItem[] Items { get; set; }
 
-		public class PurchaseHistoryIndex : AbstractIndexCreationTask
-		{
-			public override IndexDefinition CreateIndexDefinition()
-			{
-				return new IndexDefinitionBuilder<Shipment, Shipment>()
-				{
-					Map = docs => from doc in docs
-								  from product in doc.Items
-								  select new
-								  {
-									  UserId = doc.UserId,
-									  ProductId = product.ProductId
-								  },
-					TransformResults = (database, results) =>
-						from result in results
-						from item in result.Items
-						let product = database.Load<Product>(item.ProductId)
-						where product != null
-						select new
-						{
-							ProductId = item.ProductId,
-							ProductName = product.Name
-						}
-				}.ToIndexDefinition(Conventions);
-			}
-		}
+            public static PurchaseHistoryView Create(
+                IDocumentSession documentSession,
+                string userId)
+            {
+                return
+                    new PurchaseHistoryView()
+                    {
+                        Items = documentSession.Query<Shipment, PurchaseHistoryIndex>()
+                                    .TransformWith<PurchaseHistoryTransformer, Shipment>()
+                                    .Customize(x => x.WaitForNonStaleResults(TimeSpan.FromMinutes(5)))
+                                   .Where(x => x.UserId == userId)
+                                   .As<PurchaseHistoryViewItem>()
+                                   .ToArray(),
+                        ShipmentUserId = userId
+                    };
+            }
+        }
 
-		public class PurchaseHistoryViewItem
-		{
-			public string ProductId { get; set; }
-			public string ProductName { get; set; }
-		}
+        public override void Dispose()
+        {
+            Store.Dispose();
+            base.Dispose();
+        }
 
-		public class Shipment
-		{
-			public string Id { get; set; }
-			public string UserId { get; set; }
-			public Address Destination { get; set; }
-			public List<ShipmentItem> Items { get; set; }
+        public class PurchaseHistoryIndex : AbstractIndexCreationTask
+        {
+            public override IndexDefinition CreateIndexDefinition()
+            {
+                return new IndexDefinitionBuilder<Shipment, Shipment>(IndexName)
+                {
+                    Map = docs => from doc in docs
+                                  from product in doc.Items
+                                  select new
+                                  {
+                                      UserId = doc.UserId,
+                                      ProductId = product.ProductId
+                                  },
+                }.ToIndexDefinition(Conventions);
+            }
+        }
 
-			public Shipment()
-			{
-				Items = new List<ShipmentItem>();
-			}
+        public class PurchaseHistoryTransformer : AbstractTransformerCreationTask<Shipment>
+        {
+            public PurchaseHistoryTransformer()
+            {
+                TransformResults = results =>
+                    from result in results
+                    from item in result.Items
+                    let product = LoadDocument<Product>(item.ProductId)
+                    where product != null
+                    select new
+                    {
+                        ProductId = item.ProductId,
+                        ProductName = product.Name
+                    };
+            }
+        }
 
-			public void AddProduct(Product product)
-			{
-				this.Items.Add(new ShipmentItem()
-				{
-					Name = product.Name,
-					Price = product.Price,
-					ProductId = product.Id
-				});
-			}
-		}
+        public class PurchaseHistoryViewItem
+        {
+            public string ProductId { get; set; }
+            public string ProductName { get; set; }
+        }
 
-		public class Product
-		{
-			public string Id { get; set; }
-			public string Name { get; set; }
-			public string Price { get; set; }
-			public string Description { get; set; }
-		}
+        public class Shipment
+        {
+            public string Id { get; set; }
+            public string UserId { get; set; }
+            public Address Destination { get; set; }
+            public List<ShipmentItem> Items { get; set; }
 
-		public class Address
-		{
-			public string Name { get; set; }
-			public string AddressLineOne { get; set; }
-			public string AddressLineTwo { get; set; }
-			public string AddressLineThree { get; set; }
-			public string Town { get; set; }
-			public string Region { get; set; }
-			public string AreaCode { get; set; }
-			public string Country { get; set; }
-		}
+            public Shipment()
+            {
+                Items = new List<ShipmentItem>();
+            }
 
-		public class ShipmentItem
-		{
-			public string Price { get; set; }
-			public string Name { get; set; }
-			public string ProductId { get; set; }
-		}
-	}
+            public void AddProduct(Product product)
+            {
+                this.Items.Add(new ShipmentItem()
+                {
+                    Name = product.Name,
+                    Price = product.Price,
+                    ProductId = product.Id
+                });
+            }
+        }
+
+        public class Product
+        {
+            public string Id { get; set; }
+            public string Name { get; set; }
+            public string Price { get; set; }
+            public string Description { get; set; }
+        }
+
+        public class Address
+        {
+            public string Name { get; set; }
+            public string AddressLineOne { get; set; }
+            public string AddressLineTwo { get; set; }
+            public string AddressLineThree { get; set; }
+            public string Town { get; set; }
+            public string Region { get; set; }
+            public string AreaCode { get; set; }
+            public string Country { get; set; }
+        }
+
+        public class ShipmentItem
+        {
+            public string Price { get; set; }
+            public string Name { get; set; }
+            public string ProductId { get; set; }
+        }
+    }
 }

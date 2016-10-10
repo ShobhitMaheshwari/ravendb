@@ -8,67 +8,66 @@ using Raven.Json.Linq;
 
 namespace Raven.Abstractions.Commands
 {
-	/// <summary>
-	/// A single batch operation for a document PUT
-	/// </summary>
-	public class PutCommandData : ICommandData
-	{
-		/// <summary>
-		/// Gets or sets the key.
-		/// </summary>
-		/// <value>The key.</value>
-		public virtual string Key { get; set; }
+    /// <summary>
+    /// A single batch operation for a document PUT
+    /// </summary>
+    public class PutCommandData : ICommandData
+    {
+        /// <summary>
+        /// Key of a document.
+        /// </summary>
+        public virtual string Key { get; set; }
 
-		/// <summary>
-		/// Gets the method.
-		/// </summary>
-		/// <value>The method.</value>
-		public string Method
-		{
-			get { return "PUT"; }
-		}
+        /// <summary>
+        /// Returns operation method. In this case PUT.
+        /// </summary>
+        public string Method
+        {
+            get { return "PUT"; }
+        }
 
-		/// <summary>
-		/// Gets or sets the etag.
-		/// </summary>
-		/// <value>The etag.</value>
-		public virtual Etag Etag { get; set; }
+        /// <summary>
+        /// Current document etag, used for concurrency checks (null to skip check)
+        /// </summary>
+        public virtual Etag Etag { get; set; }
 
-		/// <summary>
-		/// Gets or sets the document.
-		/// </summary>
-		/// <value>The document.</value>
-		public virtual RavenJObject Document { get; set; }
+        /// <summary>
+        /// RavenJObject representing the document.
+        /// </summary>
+        public virtual RavenJObject Document { get; set; }
 
-		/// <summary>
-		/// Gets the transaction information.
-		/// </summary>
-		/// <value>The transaction information.</value>
-		public TransactionInformation TransactionInformation { get; set; }
+        /// <summary>
+        /// Information used to identify a transaction. Contains transaction Id and timeout.
+        /// </summary>
+        public TransactionInformation TransactionInformation { get; set; }
 
-		/// <summary>
-		/// Gets or sets the metadata.
-		/// </summary>
-		/// <value>The metadata.</value>
-		public virtual RavenJObject Metadata { get; set; }
-		public RavenJObject AdditionalData { get; set; }
+        /// <summary>
+        /// RavenJObject representing document's metadata.
+        /// </summary>
+        public virtual RavenJObject Metadata { get; set; }
 
-		/// <summary>
-		/// Translate this instance to a Json object.
-		/// </summary>
-		public RavenJObject ToJson()
-		{
-			var ret = new RavenJObject
-			{
-				{"Key", Key},
-				{"Method", Method},
-				{"Document", Document},
-				{"Metadata", Metadata},
-				{"AdditionalData", AdditionalData}
-			};
-			if (Etag != null)
-				ret.Add("Etag", Etag.ToString());
-			return ret;
-		}
-	}
+        /// <summary>
+        /// Additional command data. For internal use only.
+        /// </summary>
+        public RavenJObject AdditionalData { get; set; }
+
+        /// <summary>
+        /// Translates this instance to a Json object.
+        /// </summary>
+        /// <returns>RavenJObject representing the command.</returns>
+        public RavenJObject ToJson()
+        {
+            var ret = new RavenJObject
+            {
+                {"Key", Key},
+                {"Method", Method},
+                {"Document", Document},
+                {"Metadata", Metadata},
+                {"AdditionalData", AdditionalData}
+            };
+            if (Etag != null)
+                ret.Add("Etag", Etag.ToString());
+            return ret;
+        }
+    }
 }

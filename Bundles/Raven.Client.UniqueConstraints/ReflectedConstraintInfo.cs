@@ -1,35 +1,34 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
+using System;
 using System.Reflection;
-using System.Text;
+
+using Raven.Abstractions.Extensions;
 
 namespace Raven.Client.UniqueConstraints
 {
-	public class ReflectedConstraintInfo : ConstraintInfo
-	{
-		public ReflectedConstraintInfo(PropertyInfo property, UniqueConstraintAttribute attr) : base()
-		{
-			if (property == null) { throw new ArgumentNullException("property"); }
+    public class ReflectedConstraintInfo : ConstraintInfo
+    {
+        public ReflectedConstraintInfo(MemberInfo member, UniqueConstraintAttribute attr)
+        {
+            if (member == null) { throw new ArgumentNullException("member"); }
 
-			this.Property = property;
-			this.Configuration.Name = property.Name;
+            this.Member = member;
+            this.Configuration.Name = member.Name;
 
-			if (attr != null)
-			{
-				this.Configuration.CaseInsensitive = attr.CaseInsensitive;
-			}
-		}
+            if (attr != null)
+            {
+                this.Configuration.CaseInsensitive = attr.CaseInsensitive;
+            }
+        }
 
-		public PropertyInfo Property { get; private set; }
+        public MemberInfo Member { get; private set; }
 
-		public override object GetValue(object entity)
-		{
-			object value = this.Property.GetValue(entity, null);
+        public override object GetValue(object entity)
+        {
+            object value = Member.GetValue(entity);
 
-			if (value == null) { return null; }
+            if (value == null) { return null; }
 
-			return value;
-		}
-	}
+            return value;
+        }
+    }
 }

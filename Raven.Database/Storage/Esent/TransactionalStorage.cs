@@ -4,6 +4,7 @@
 // </copyright>
 //-----------------------------------------------------------------------
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.Diagnostics;
@@ -11,7 +12,9 @@ using System.IO;
 using System.Runtime.ConstrainedExecution;
 using System.Threading;
 using System.Threading.Tasks;
+
 using Microsoft.Isam.Esent.Interop;
+using Raven.Abstractions;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Extensions;
@@ -26,12 +29,14 @@ using Raven.Database.Impl.DTC;
 using Raven.Database.Plugins;
 using System.Linq;
 using Raven.Database.Storage;
+using Raven.Database.Storage.Esent;
+using Raven.Database.Storage.Esent.Backup;
 using Raven.Database.Storage.Esent.Debug;
+using Raven.Database.Storage.Esent.StorageActions;
 using Raven.Database.Util;
 using Raven.Json.Linq;
-using Raven.Storage.Esent.Backup;
 using Raven.Storage.Esent.SchemaUpdates;
-using Raven.Storage.Esent.StorageActions;
+
 
 namespace Raven.Storage.Esent
 {
@@ -39,8 +44,8 @@ namespace Raven.Storage.Esent
     {
         private static int instanceCounter;
         private readonly ThreadLocal<StorageActionsAccessor> current = new ThreadLocal<StorageActionsAccessor>();
-		private readonly ThreadLocal<object> disableBatchNesting = new ThreadLocal<object>();
-		private readonly ThreadLocal<EsentTransactionContext> dtcTransactionContext = new ThreadLocal<EsentTransactionContext>();
+        private readonly ThreadLocal<object> disableBatchNesting = new ThreadLocal<object>();
+        private readonly ThreadLocal<EsentTransactionContext> dtcTransactionContext = new ThreadLocal<EsentTransactionContext>();
         private readonly string database;
         private readonly InMemoryRavenConfiguration configuration;
         private readonly Action onCommit;
@@ -52,12 +57,15 @@ namespace Raven.Storage.Esent
         private readonly TableColumnsCache tableColumnsCache = new TableColumnsCache();
         private IUuidGenerator generator;
         private readonly IDocumentCacher documentCacher;
-	    private EsentInFlightTransactionalState inFlightTransactionalState;
+        private EsentInFlightTransactionalState inFlightTransactionalState;
 
         private static readonly ILog log = LogManager.GetCurrentClassLogger();
+        private ConcurrentDictionary<int, RemainingReductionPerLevel> scheduledReductionsPerViewAndLevel = new ConcurrentDictionary<int, RemainingReductionPerLevel>();
 
         [ImportMany]
         public OrderedPartCollection<ISchemaUpdate> Updaters { get; set; }
+
+        private static readonly object UpdateLocker = new object();
 
         static TransactionalStorage()
         {
@@ -76,13 +84,19 @@ namespace Raven.Storage.Esent
             }
         }
 
-        public TransactionalStorage(InMemoryRavenConfiguration configuration, Action onCommit)
+        public TransactionalStorage(InMemoryRavenConfiguration configuration, Action onCommit, Action onStorageInaccessible, Action onNestedTransactionEnter, Action onNestedTransactionExit)
         {
             configuration.Container.SatisfyImportsOnce(this);
-            documentCacher = new DocumentCacher(configuration);
+
+            if (configuration.CacheDocumentsInMemory == false)
+                documentCacher = new NullDocumentCacher();
+            else
+                documentCacher = new DocumentCacher(configuration);    
+            
             database = configuration.DataDirectory;
             this.configuration = configuration;
             this.onCommit = onCommit;
+            
             path = database;
             if (Path.IsPathRooted(database) == false)
                 path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, database);
@@ -94,6 +108,22 @@ namespace Raven.Storage.Esent
 
             uniquePrefix = Interlocked.Increment(ref instanceCounter) + "-" + Base62Util.Base62Random();
             CreateInstance(out instance, uniquePrefix + "-" + database);
+            this.onNestedTransactionEnter = onNestedTransactionEnter;
+            this.onNestedTransactionExit = onNestedTransactionExit;
+        }
+
+        public ConcurrentDictionary<int, RemainingReductionPerLevel> GetScheduledReductionsPerViewAndLevel()
+        {
+            return configuration.Indexing.DisableMapReduceInMemoryTracking ? null : scheduledReductionsPerViewAndLevel;
+        }
+
+        public void ResetScheduledReductionsTracking()
+        {
+            scheduledReductionsPerViewAndLevel.Clear();
+        }
+
+        public void RegisterTransactionalStorageNotificationHandler(ITransactionalStorageNotificationHandler handler)
+        {
         }
 
         public TableColumnsCache TableColumnsCache
@@ -112,8 +142,7 @@ namespace Raven.Storage.Esent
         }
 
         public Guid Id { get; private set; }
-
-
+        public IDocumentCacher DocumentCacher { get { return documentCacher; } }
 
         public void Dispose()
         {
@@ -121,7 +150,7 @@ namespace Raven.Storage.Esent
             try
             {
                 if (tryEnterWriteLock == false)
-                    log.Warn( "After waiting for 2 minutes, could not aqcuire disposal lock, will force disposal anyway, pending transactions will all error");
+                    log.Warn("After waiting for 2 minutes, could not acquire disposal lock, will force disposal anyway, pending transactions will all error");
 
                 if (disposed)
                     return;
@@ -132,23 +161,39 @@ namespace Raven.Storage.Esent
                 if (documentCacher != null)
                     exceptionAggregator.Execute(documentCacher.Dispose);
 
-				if(inFlightTransactionalState != null)
-					exceptionAggregator.Execute(inFlightTransactionalState.Dispose);
+                if (inFlightTransactionalState != null)
+                    exceptionAggregator.Execute(inFlightTransactionalState.Dispose);
 
                 exceptionAggregator.Execute(() =>
                     {
-	                    try
-	                    {
-							Api.JetTerm2(instance, TermGrbit.Complete);
-	                    }
-						catch (EsentDiskIOException e)
-						{
-							log.ErrorException(
-								"Could not properly terminate Esent instance because of disk exception. Ignoring this error to allow to shutdown RavenDB instance.",
-								e);
-						}
-                        
-                        GC.SuppressFinalize(this);
+                        try
+                        {
+                            Api.JetTerm2(instance, TermGrbit.Complete);
+                        }
+                        catch (Exception e1)
+                        {
+                            log.ErrorException(
+                                "Unexpected error occurred while terminating Esent Storage. Ignoring this error to allow to shutdown RavenDB instance.",
+                                e1);
+
+                            try
+                            {
+                                log.Warn(
+                                    "Will now attempt to perform an abrupt shutdown, because asking nicely didn't work. You might need to run defrag on the database to recover potentially lost space (but no data will be lost).");
+                                Api.JetTerm2(instance, TermGrbit.Abrupt);
+                            }
+                            catch (Exception e2)
+                            {
+
+                                log.FatalException(
+                                    "Couldn't shut down the database server even when using abrupt, something is probably wrong and you'll need to restart the server process to access the database",
+                                    e2);
+                            }
+                        }
+                        finally
+                        {
+                            GC.SuppressFinalize(this);
+                        }
                     });
 
                 exceptionAggregator.ThrowIfNeeded();
@@ -168,30 +213,37 @@ namespace Raven.Storage.Esent
         public void StartBackupOperation(DocumentDatabase docDb, string backupDestinationDirectory, bool incrementalBackup, DatabaseDocument documentDatabase)
         {
             if (new InstanceParameters(instance).Recovery == false)
-                throw new InvalidOperationException("Cannot start backup operation since the recovery option is disabled. In order to enable the recovery please set the RunInUnreliableYetFastModeThatIsNotSuitableForProduction configuration parameter value to true.");
+                throw new InvalidOperationException("Cannot start backup operation since the recovery option is disabled. In order to enable the recovery please set the RunInUnreliableYetFastModeThatIsNotSuitableForProduction configuration parameter value to false.");
 
             var backupOperation = new BackupOperation(docDb, docDb.Configuration.DataDirectory, backupDestinationDirectory, incrementalBackup, documentDatabase);
             Task.Factory.StartNew(backupOperation.Execute);
         }
 
-        public void Restore(string backupLocation, string databaseLocation, Action<string> output, bool defrag)
+        public void Restore(DatabaseRestoreRequest restoreRequest, Action<string> output)
         {
-            new RestoreOperation(backupLocation, configuration, output, defrag).Execute();
+            new RestoreOperation(restoreRequest, configuration, output).Execute();
         }
 
-        public long GetDatabaseSizeInBytes()
+        public DatabaseSizeInformation GetDatabaseSize()
         {
-            long sizeInBytes;
+            long allocatedSizeInBytes;
+            long usedSizeInBytes;
 
             using (var pht = new DocumentStorageActions(instance, database, tableColumnsCache, DocumentCodecs, generator, documentCacher, null, this))
             {
-                int sizeInPages, pageSize;
+                int sizeInPages, pageSize, spaceOwnedInPages;
                 Api.JetGetDatabaseInfo(pht.Session, pht.Dbid, out sizeInPages, JET_DbInfo.Filesize);
+                Api.JetGetDatabaseInfo(pht.Session, pht.Dbid, out spaceOwnedInPages, JET_DbInfo.SpaceOwned);
                 Api.JetGetDatabaseInfo(pht.Session, pht.Dbid, out pageSize, JET_DbInfo.PageSize);
-                sizeInBytes = ((long)sizeInPages) * pageSize;
+                allocatedSizeInBytes = ((long)sizeInPages) * pageSize;
+                usedSizeInBytes = ((long)spaceOwnedInPages) * pageSize;
             }
 
-            return sizeInBytes;
+            return new DatabaseSizeInformation
+                   {
+                       AllocatedSizeInBytes = allocatedSizeInBytes,
+                       UsedSizeInBytes = usedSizeInBytes
+                   };
         }
 
         public long GetDatabaseCacheSizeInBytes()
@@ -205,8 +257,6 @@ namespace Raven.Storage.Esent
 
         public long GetDatabaseTransactionVersionSizeInBytes()
         {
-            if (configuration.DisablePerformanceCounters)
-                return -4;
             if (getDatabaseTransactionVersionSizeInBytesErrorValue != 0)
                 return getDatabaseTransactionVersionSizeInBytesErrorValue;
 
@@ -226,7 +276,7 @@ namespace Raven.Storage.Esent
                 using (var counter = new PerformanceCounter(categoryName, counterName, ravenInstance, readOnly: true))
                 {
                     var value = counter.NextValue();
-                    return (long)(value * TransactionalStorageConfigurator.GetVersionPageSize());
+                    return (long)(value * StorageConfigurator.GetVersionPageSize());
                 }
             }
             catch (Exception e)
@@ -238,6 +288,14 @@ namespace Raven.Storage.Esent
                 }
                 return getDatabaseTransactionVersionSizeInBytesErrorValue = -3;
             }
+        }
+
+        public StorageStats GetStorageStats()
+        {
+            return new StorageStats()
+            {
+                EsentStats = new EsentStorageStats()
+            };
         }
 
         public string FriendlyName
@@ -255,9 +313,26 @@ namespace Raven.Storage.Esent
             return e.Error == JET_err.InvalidInstance;
         }
 
-        void ITransactionalStorage.Compact(InMemoryRavenConfiguration cfg)
+        public bool SupportsDtc { get { return true; } }
+
+        void ITransactionalStorage.Compact(InMemoryRavenConfiguration cfg, Action<string> output)
         {
-            Compact(cfg, (sesid, snp, snt, data) => JET_err.Success);
+            DateTime lastCompactionProgressStatusUpdate = DateTime.MinValue;
+
+            Compact(cfg, (sesid, snp, snt, data) =>
+            {
+
+                if (snt == JET_SNT.Progress)
+                {
+                    if (SystemTime.UtcNow - lastCompactionProgressStatusUpdate < TimeSpan.FromMilliseconds(100))
+                        return JET_err.Success;
+
+                    lastCompactionProgressStatusUpdate = SystemTime.UtcNow;
+                }
+
+                output(string.Format("Esent Compact: {0} {1} {2}", snp, snt, data));
+                return JET_err.Success;
+            });
         }
 
         private static void RecoverFromFailedCompact(string file)
@@ -279,7 +354,33 @@ namespace Raven.Storage.Esent
             }
         }
 
+
+        private static object compactLocker = new object();
+        private Action onNestedTransactionEnter;
+        private Action onNestedTransactionExit;
+
         public static void Compact(InMemoryRavenConfiguration ravenConfiguration, JET_PFNSTATUS statusCallback)
+        {
+            bool lockTaken = false;
+            try
+            {
+                Monitor.TryEnter(compactLocker, 30 * 1000, ref lockTaken);
+                if (lockTaken == false)
+                {
+                    throw new TimeoutException("Could not take Esent Compact Lock. Because of a probable bug in Esent, we only allow a single database to be compacted at a given time.\r\n" +
+                                               "However, we waited for 30 seconds for the compact lock to be released, and gave up. The database wasn't compacted, please try again later, when the other compaction process is over.");
+                }
+                CompactInternal(ravenConfiguration, statusCallback);
+            }
+            finally
+            {
+
+                if (lockTaken)
+                    Monitor.Exit(compactLocker);
+            }
+        }
+
+        private static void CompactInternal(InMemoryRavenConfiguration ravenConfiguration, JET_PFNSTATUS statusCallback)
         {
             var src = Path.Combine(ravenConfiguration.DataDirectory, "Data");
             var compactPath = Path.Combine(ravenConfiguration.DataDirectory, "Data.Compact");
@@ -332,7 +433,7 @@ namespace Raven.Storage.Esent
         public Guid ChangeId()
         {
             Guid newId = Guid.NewGuid();
-            instance.WithDatabase(database, (session, dbid) =>
+            instance.WithDatabase(database, (session, dbid, tx) =>
             {
                 using (var details = new Table(session, dbid, "details", OpenTableGrbit.None))
                 {
@@ -344,6 +445,7 @@ namespace Raven.Storage.Esent
                         update.Save();
                     }
                 }
+                return tx;
             });
             Id = newId;
             return newId;
@@ -366,21 +468,22 @@ namespace Raven.Storage.Esent
             });
         }
 
-        public IList<string> ComputeDetailedStorageInformation()
+        public IList<string> ComputeDetailedStorageInformation(bool computeExactSizes = false)
         {
             return StorageSizes.ReportOn(this);
         }
 
-        public InFlightTransactionalState GetInFlightTransactionalState(Func<string, Etag, RavenJObject, RavenJObject, TransactionInformation, PutResult> put, Func<string, Etag, TransactionInformation, bool> delete)
-	    {
-			var txMode = configuration.TransactionMode == TransactionMode.Lazy
-			   ? CommitTransactionGrbit.LazyFlush
-			   : CommitTransactionGrbit.None;
+        [CLSCompliant(false)]
+        public InFlightTransactionalState InitializeInFlightTransactionalState(DocumentDatabase self, Func<string, Etag, RavenJObject, RavenJObject, TransactionInformation, PutResult> put, Func<string, Etag, TransactionInformation, bool> delete)
+        {
+            var txMode = configuration.TransactionMode == TransactionMode.Lazy
+               ? CommitTransactionGrbit.LazyFlush
+               : CommitTransactionGrbit.None;
 
-		    return inFlightTransactionalState ?? (inFlightTransactionalState = new EsentInFlightTransactionalState(this, txMode, put, delete));
-	    }
+            return inFlightTransactionalState ?? (inFlightTransactionalState = new EsentInFlightTransactionalState(self, this, txMode, put, delete));
+        }
 
-	    public void ClearCaches()
+        public void ClearCaches()
         {
             var cacheSizeMax = SystemParameters.CacheSizeMax;
             SystemParameters.CacheSize = 1; // force emptying of the cache
@@ -389,7 +492,7 @@ namespace Raven.Storage.Esent
             SystemParameters.CacheSizeMax = cacheSizeMax;
         }
 
-        public bool Initialize(IUuidGenerator uuidGenerator, OrderedPartCollection<AbstractDocumentCodec> documentCodecs)
+        public void Initialize(IUuidGenerator uuidGenerator, OrderedPartCollection<AbstractDocumentCodec> documentCodecs, Action<string> putResourceMarker = null)
         {
             try
             {
@@ -409,13 +512,14 @@ namespace Raven.Storage.Esent
 
                 Api.JetInit(ref instance);
 
-                var newDb = EnsureDatabaseIsCreatedAndAttachToDatabase();
+                EnsureDatabaseIsCreatedAndAttachToDatabase();
 
                 SetIdFromDb();
 
                 tableColumnsCache.InitColumDictionaries(instance, database);
 
-                return newDb;
+                if (putResourceMarker != null)
+                    putResourceMarker(path);
             }
             catch (Exception e)
             {
@@ -435,7 +539,7 @@ namespace Raven.Storage.Esent
         {
             try
             {
-                instance.WithDatabase(database, (session, dbid) =>
+                instance.WithDatabase(database, (session, dbid, tx) =>
                 {
                     using (var details = new Table(session, dbid, "details", OpenTableGrbit.ReadOnly))
                     {
@@ -444,8 +548,8 @@ namespace Raven.Storage.Esent
                         var column = Api.RetrieveColumn(session, details, columnids["id"]);
                         Id = new Guid(column);
                         var schemaVersion = Api.RetrieveColumnAsString(session, details, columnids["schema_version"]);
-                        if (schemaVersion == SchemaCreator.SchemaVersion)
-                            return;
+                        if (configuration.Storage.PreventSchemaUpdate || schemaVersion == SchemaCreator.SchemaVersion)
+                            return tx;
 
                         using (var ticker = new OutputTicker(TimeSpan.FromSeconds(3), () =>
                         {
@@ -458,37 +562,68 @@ namespace Raven.Storage.Esent
                             Console.WriteLine();
                         }))
                         {
-                            do
+                            bool lockTaken = false;
+                            try
                             {
-                                var updater = Updaters.FirstOrDefault(update => update.Value.FromSchemaVersion == schemaVersion);
-                                if (updater == null)
-                                    throw new InvalidOperationException(
-                                        string.Format(
-                                            "The version on disk ({0}) is different that the version supported by this library: {1}{2}You need to migrate the disk version to the library version, alternatively, if the data isn't important, you can delete the file and it will be re-created (with no data) with the library version.",
-                                            schemaVersion, SchemaCreator.SchemaVersion, Environment.NewLine));
+                                Monitor.TryEnter(UpdateLocker, TimeSpan.FromSeconds(15), ref lockTaken);
+                                if (lockTaken == false)
+                                    throw new TimeoutException("Could not take upgrade lock after 15 seconds, probably another database is upgrading itself and we can't interrupt it midway. Please try again later");
 
-                                log.Info("Updating schema from version {0}: ", schemaVersion);
-                                Console.WriteLine("Updating schema from version {0}: ", schemaVersion);
+                                do
+                                {
+                                    var updater = Updaters.FirstOrDefault(update => update.Value.FromSchemaVersion == schemaVersion);
+                                    if (updater == null)
+                                        throw new InvalidOperationException(
+                                            string.Format(
+                                                "The version on disk ({0}) is different that the version supported by this library: {1}{2}You need to migrate the disk version to the library version, alternatively, if the data isn't important, you can delete the file and it will be re-created (with no data) with the library version.",
+                                                schemaVersion, SchemaCreator.SchemaVersion, Environment.NewLine));
 
-                                ticker.Start();
+                                    log.Info("Updating schema from version {0}: ", schemaVersion);
+                                    Console.WriteLine("Updating schema from version {0}: ", schemaVersion);
+                                    ticker.Start();
 
-                                updater.Value.Init(generator);
-                                updater.Value.Update(session, dbid, Output);
-                                schemaVersion = Api.RetrieveColumnAsString(session, details, columnids["schema_version"]);
+                                    updater.Value.Init(generator, configuration);
+                                    updater.Value.Update(session, dbid, Output);
 
-                                ticker.Stop();
+                                    tx.Commit(CommitTransactionGrbit.LazyFlush);
+                                    tx = new Transaction(session);
 
-                            } while (schemaVersion != SchemaCreator.SchemaVersion);
+                                    schemaVersion = Api.RetrieveColumnAsString(session, details, columnids["schema_version"]);
+
+                                    ticker.Stop();
+
+                                } while (schemaVersion != SchemaCreator.SchemaVersion);
+
+                                return tx;
+                            }
+                            finally
+                            {
+                                if (lockTaken)
+                                    Monitor.Exit(UpdateLocker);
+                            }
                         }
                     }
                 });
             }
+            catch (EsentVersionStoreOutOfMemoryException esentOutOfMemoryException)
+            {
+                var message = "Schema Update Process for " + database + " Failed due to Esent Out Of Memory Exception!" +
+                              Environment.NewLine +
+                              "This might be caused by exceptionally large files, Consider enlarging the value of Raven/Esent/MaxVerPages (default:512)";
+                log.Error(message);
+
+                Console.WriteLine(message);
+                throw new InvalidOperationException(message, esentOutOfMemoryException);
+            }
             catch (Exception e)
             {
+                var message = "Could not read db details from disk. It is likely that there is a version difference between the library and the db on the disk." +
+                              Environment.NewLine +
+                              "You need to migrate the disk version to the library version, alternatively, if the data isn't important, you can delete the file and it will be re-created (with no data) with the library version.";
+                log.Error(message);
+                Console.WriteLine(message);
                 throw new InvalidOperationException(
-                    "Could not read db details from disk. It is likely that there is a version difference between the library and the db on the disk." +
-                        Environment.NewLine +
-                            "You need to migrate the disk version to the library version, alternatively, if the data isn't important, you can delete the file and it will be re-created (with no data) with the library version.",
+                    message,
                     e);
             }
         }
@@ -535,10 +670,11 @@ namespace Raven.Storage.Esent
                     case JET_err.DatabaseDirtyShutdown:
                         try
                         {
+                            Api.JetTerm2(instance, TermGrbit.Complete);
                             using (var recoverInstance = new Instance("Recovery instance for: " + database))
                             {
-								new TransactionalStorageConfigurator(configuration, this).ConfigureInstance(recoverInstance.JetInstance, path);
-								recoverInstance.Init();
+                                new TransactionalStorageConfigurator(configuration, this).ConfigureInstance(recoverInstance.JetInstance, path);
+                                recoverInstance.Init();
                                 using (var recoverSession = new Session(recoverInstance))
                                 {
                                     Api.JetAttachDatabase(recoverSession, database,
@@ -547,9 +683,12 @@ namespace Raven.Storage.Esent
                                 }
                             }
                         }
-                        catch (Exception)
+                        catch (Exception e2)
                         {
+                            log.WarnException("Could not recover database " + database + ", will try opening it one last time. If that doesn't work, try using esentutl", e2);
                         }
+                        CreateInstance(out instance, uniquePrefix + "-" + database);
+                        Api.JetInit(ref instance);
                         using (var session = new Session(instance))
                         {
                             Api.JetAttachDatabase2(session, database, maxSize, AttachDatabaseGrbit.None);
@@ -588,35 +727,48 @@ namespace Raven.Storage.Esent
             }
         }
 
-		public IDisposable DisableBatchNesting()
-		{
-			disableBatchNesting.Value = new object();
-			return new DisposableAction(() => disableBatchNesting.Value = null);
-		}
+        /// <summary>
+        /// Force current operations inside context to be performed directly
+        /// </summary>
+        /// <returns></returns>
+        public IDisposable DisableBatchNesting()
+        {
+            disableBatchNesting.Value = new object();
+            if (onNestedTransactionEnter != null)
+                onNestedTransactionEnter();
+            
+            return new DisposableAction(() =>
+            {
+                if (onNestedTransactionExit!= null)
+                    onNestedTransactionExit();
+                disableBatchNesting.Value = null;
+            });
+        }
 
-		public IDisposable SetTransactionContext(EsentTransactionContext context)
-		{
-			dtcTransactionContext.Value = context;
+        public IDisposable SetTransactionContext(EsentTransactionContext context)
+        {
+            dtcTransactionContext.Value = context;
 
-			return new DisposableAction(() =>
-			{
-				dtcTransactionContext.Value = null;
-			});
-		}
+            return new DisposableAction(() =>
+            {
+                dtcTransactionContext.Value = null;
+            });
+        }
 
         //[DebuggerHidden, DebuggerNonUserCode, DebuggerStepThrough]
         [CLSCompliant(false)]
         public void Batch(Action<IStorageActionsAccessor> action)
         {
-	        var batchNestingAllowed = disableBatchNesting.Value == null;
+            var batchNestingAllowed = disableBatchNesting.Value == null;
 
             if (disposerLock.IsReadLockHeld && batchNestingAllowed) // we are currently in a nested Batch call and allow to nest batches
             {
-                if (current.Value != null) // check again, just to be sure
+                var storageActionsAccessor = current.Value;
+                if (storageActionsAccessor != null) // check again, just to be sure
                 {
-                    current.Value.IsNested = true;
-                    action(current.Value);
-                    current.Value.IsNested = false;
+                    storageActionsAccessor.IsNested = true;
+                    action(storageActionsAccessor);
+                    storageActionsAccessor.IsNested = false;
                     return;
                 }
             }
@@ -625,41 +777,52 @@ namespace Raven.Storage.Esent
             disposerLock.EnterReadLock();
             try
             {
-				afterStorageCommit = ExecuteBatch(action, batchNestingAllowed ? dtcTransactionContext.Value : null);
+                afterStorageCommit = ExecuteBatch(action, batchNestingAllowed ? dtcTransactionContext.Value : null);
 
-				if (dtcTransactionContext.Value != null)
-				{
-					dtcTransactionContext.Value.AfterCommit((Action)afterStorageCommit.Clone());
-					afterStorageCommit = null; // delay until transaction will be committed
-				}
+                if (dtcTransactionContext.Value != null)
+                {
+                    dtcTransactionContext.Value.AfterCommit((Action) afterStorageCommit.Clone());
+                    afterStorageCommit = null; // delay until transaction will be committed
+                }
             }
-            catch (EsentErrorException e)
+            catch (Exception ex)
             {
                 if (disposed)
                 {
-                    Trace.WriteLine("TransactionalStorage.Batch was called after it was disposed, call was ignored.");
+                    Trace.WriteLine("TransactionalStorage.Batch was called after it was disposed, call was ignored.\r\n" + ex);
+                    if (Environment.StackTrace.Contains(".Finalize()") == false)
+                        throw;
                     return; // this may happen if someone is calling us from the finalizer thread, so we can't even throw on that
                 }
 
-                switch (e.Error)
+                EsentErrorException e = ex as EsentErrorException;
+                if (e != null)
                 {
-                    case JET_err.WriteConflict:
-                    case JET_err.SessionWriteConflict:
-                    case JET_err.WriteConflictPrimaryIndex:
-                        throw new ConcurrencyException("Concurrent modification to the same document are not allowed", e);
-                    default:
-                        throw;
+                    switch (e.Error)
+                    {
+                        case JET_err.WriteConflict:
+                        case JET_err.SessionWriteConflict:
+                        case JET_err.WriteConflictPrimaryIndex:
+                            throw new ConcurrencyException("Concurrent modification to the same document are not allowed", e);
+                        default:
+                            throw;
+                    }
                 }
+                throw;
             }
             finally
             {
                 disposerLock.ExitReadLock();
-				if (disposed == false && disableBatchNesting.Value == null)
+                if (disposed == false && disableBatchNesting.Value == null)
                     current.Value = null;
             }
             if (afterStorageCommit != null)
                 afterStorageCommit();
-            onCommit(); // call user code after we exit the lock
+
+            if (onCommit!= null)
+                onCommit(); // call user code after we exit the lock
+            
+            
         }
 
         //[DebuggerHidden, DebuggerNonUserCode, DebuggerStepThrough]
@@ -668,21 +831,64 @@ namespace Raven.Storage.Esent
             var txMode = configuration.TransactionMode == TransactionMode.Lazy
                 ? CommitTransactionGrbit.LazyFlush
                 : CommitTransactionGrbit.None;
-            using (var pht = new DocumentStorageActions(instance, database, tableColumnsCache, DocumentCodecs, generator, documentCacher, transactionContext, this))
-            {
-                var storageActionsAccessor = new StorageActionsAccessor(pht);
-				if(disableBatchNesting.Value == null)
-					current.Value = storageActionsAccessor;
-				action(storageActionsAccessor);
-                storageActionsAccessor.SaveAllTasks();
 
-                if (pht.UsingLazyCommit)
+            bool lockTaken = false;
+            if (transactionContext != null)
+                Monitor.Enter(transactionContext, ref lockTaken);
+
+            try
+            {
+                using (var pht = new DocumentStorageActions(instance, database, tableColumnsCache, DocumentCodecs, generator, documentCacher, transactionContext, this))
                 {
-                    txMode = CommitTransactionGrbit.None;
+                    var dtcSnapshot = inFlightTransactionalState != null ? // might be not already initialized yet, during database creation
+                                        inFlightTransactionalState.GetSnapshot() : EmptyInFlightStateSnapshot.Instance;
+
+                    var storageActionsAccessor = new StorageActionsAccessor(pht, dtcSnapshot);
+                    if (disableBatchNesting.Value == null)
+                        current.Value = storageActionsAccessor;
+                    action(storageActionsAccessor);
+                    storageActionsAccessor.SaveAllTasks();
+                    pht.ExecuteBeforeStorageCommit();
+
+                    if (pht.UsingLazyCommit)
+                        txMode = CommitTransactionGrbit.None;
+
+                    try
+                    {
+                        return pht.Commit(txMode);
+                    }
+                    finally
+                    {
+                        pht.ExecuteAfterStorageCommit();
+                    }
                 }
-                return pht.Commit(txMode);
+            }
+            finally
+            {
+                if (lockTaken)
+                    Monitor.Exit(transactionContext);
             }
         }
+
+        public IStorageActionsAccessor CreateAccessor()
+        {
+            var pht = new DocumentStorageActions(instance, database, tableColumnsCache, DocumentCodecs, generator,
+                documentCacher, null, this);
+
+            var accessor = new StorageActionsAccessor(pht, inFlightTransactionalState.GetSnapshot());
+
+            accessor.OnDispose += pht.Dispose;
+
+            return accessor;
+        }
+
+        public bool SkipConsistencyCheck
+        {
+            get
+            {
+                return configuration.Storage.SkipConsistencyCheck;
+            }
+        } 
 
         public void ExecuteImmediatelyOrRegisterForSynchronization(Action action)
         {
@@ -694,10 +900,10 @@ namespace Raven.Storage.Esent
             current.Value.OnStorageCommit += action;
         }
 
-	    public bool IsAlreadyInBatch
-	    {
-			get { return current.Value != null; }
-	    }
+        public bool IsAlreadyInBatch
+        {
+            get { return current.Value != null; }
+        }
 
         internal StorageActionsAccessor GetCurrentBatch()
         {
@@ -723,8 +929,19 @@ namespace Raven.Storage.Esent
         private void Output(string message)
         {
             log.Info(message);
+            Console.Write("DB {0}: ", Path.GetFileName(Path.GetDirectoryName(database)));
             Console.Write(message);
             Console.WriteLine();
+        }
+
+        public List<TransactionContextData> GetPreparedTransactions()
+        {
+            return inFlightTransactionalState.GetPreparedTransactions();
+        }
+
+        public object GetInFlightTransactionsInternalStateForDebugOnly()
+        {
+            return inFlightTransactionalState.GetInFlightTransactionsInternalStateForDebugOnly();
         }
     }
 }

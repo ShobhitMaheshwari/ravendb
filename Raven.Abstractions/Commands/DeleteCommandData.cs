@@ -8,61 +8,60 @@ using Raven.Json.Linq;
 
 namespace Raven.Abstractions.Commands
 {
-	/// <summary>
-	/// A single batch operation for a document DELETE
-	/// </summary>
-	public class DeleteCommandData : ICommandData
-	{
-		/// <summary>
-		/// Gets or sets the key.
-		/// </summary>
-		/// <value>The key.</value>
-		public virtual string Key { get; set; }
+    /// <summary>
+    /// A single batch operation for a document DELETE
+    /// </summary>
+    public class DeleteCommandData : ICommandData
+    {
+        /// <summary>
+        /// Key of a document to delete.
+        /// </summary>
+        public virtual string Key { get; set; }
 
-		/// <summary>
-		/// Gets the method.
-		/// </summary>
-		/// <value>The method.</value>
-		public string Method
-		{
-			get { return "DELETE"; }
-		}
+        /// <summary>
+        /// Returns operation method. In this case DELETE.
+        /// </summary>
+        public string Method
+        {
+            get { return "DELETE"; }
+        }
 
-		/// <summary>
-		/// Gets or sets the etag.
-		/// </summary>
-		/// <value>The etag.</value>
-		public virtual Etag Etag { get; set; }
+        /// <summary>
+        /// Current document etag, used for concurrency checks (null to skip check)
+        /// </summary>
+        public virtual Etag Etag { get; set; }
 
-		/// <summary>
-		/// Gets or sets the transaction information.
-		/// </summary>
-		/// <value>The transaction information.</value>
-		public TransactionInformation TransactionInformation { get; set; }
+        /// <summary>
+        /// Information used to identify a transaction. Contains transaction Id and timeout.
+        /// </summary>
+        public TransactionInformation TransactionInformation { get; set; }
 
-		/// <summary>
-		/// Gets or sets the metadata.
-		/// </summary>
-		/// <value>The metadata.</value>
-		public RavenJObject Metadata
-		{
-			get { return null; }
-		}
+        /// <summary>
+        /// RavenJObject representing document's metadata. In this case null.
+        /// </summary>
+        public RavenJObject Metadata
+        {
+            get { return null; }
+        }
 
-		public RavenJObject AdditionalData { get; set; }
+        /// <summary>
+        /// Additional command data. For internal use only.
+        /// </summary>
+        public RavenJObject AdditionalData { get; set; }
 
-		/// <summary>
-		/// Translate this instance to a Json object.
-		/// </summary>
-		public RavenJObject ToJson()
-		{
-			return new RavenJObject
-			       	{
-			       		{"Key", Key},
-						{"Etag", new RavenJValue(Etag != null ? (object) Etag.ToString() : null)},
-						{"Method", Method},
-						{"AdditionalData", AdditionalData}
-			       	};
-		}
-	}
+        /// <summary>
+        /// Translates this instance to a Json object.
+        /// </summary>
+        /// <returns>RavenJObject representing the command.</returns>
+        public RavenJObject ToJson()
+        {
+            return new RavenJObject
+                    {
+                        {"Key", Key},
+                        {"Etag", new RavenJValue(Etag != null ? (object) Etag.ToString() : null)},
+                        {"Method", Method},
+                        {"AdditionalData", AdditionalData}
+                    };
+        }
+    }
 }

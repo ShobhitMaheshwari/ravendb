@@ -1,74 +1,135 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 //  <copyright file="Prefetcher.cs" company="Hibernating Rhinos LTD">
 //      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 //  </copyright>
 // -----------------------------------------------------------------------
 using System.Collections.Generic;
 using Raven.Abstractions.Data;
+using Raven.Database.Config;
 using Raven.Database.Indexing;
 
 namespace Raven.Database.Prefetching
 {
-	public class Prefetcher
-	{
-		private readonly WorkContext workContext;
-		private IDictionary<PrefetchingUser, PrefetchingBehavior> prefetchingBehaviors = new Dictionary<PrefetchingUser, PrefetchingBehavior>();
+    using System.Linq;
 
-		public Prefetcher(WorkContext workContext)
-		{
-			this.workContext = workContext;
-		}
+    public class Prefetcher : ILowMemoryHandler
+    {
+        private readonly WorkContext workContext;
+        private List<PrefetchingBehavior> prefetchingBehaviors = new List<PrefetchingBehavior>();
 
-		public PrefetchingBehavior GetPrefetchingBehavior(PrefetchingUser user, BaseBatchSizeAutoTuner autoTuner)
-		{
-			PrefetchingBehavior value;
-			if (prefetchingBehaviors.TryGetValue(user, out value))
-				return value;
-			lock (this)
-			{
-				if (prefetchingBehaviors.TryGetValue(user, out value))
-					return value;
+        public Prefetcher(WorkContext workContext)
+        {
+            this.workContext = workContext;
+            MemoryStatistics.RegisterLowMemoryHandler(this);
+        }
 
-				value = new PrefetchingBehavior(workContext, autoTuner ?? new IndependentBatchSizeAutoTuner(workContext));
+        public PrefetchingBehavior CreatePrefetchingBehavior(PrefetchingUser user, BaseBatchSizeAutoTuner autoTuner, string prefetchingUserDescription, bool isDefault = false)
+        {
+            lock (this)
+            {
+                var newPrefetcher = 
+                    new PrefetchingBehavior(user, 
+                                            workContext, 
+                                            autoTuner ?? new IndependentBatchSizeAutoTuner(workContext, user), 
+                                            prefetchingUserDescription, 
+                                            isDefault,
+                                            GetPrefetchintBehavioursCount,
+                                            GetPrefetchingBehaviourSummary);
 
-				prefetchingBehaviors = new Dictionary<PrefetchingUser, PrefetchingBehavior>(prefetchingBehaviors)
-				{
-					{user, value}
-				};
-				return value;
-			}
-		}
+                prefetchingBehaviors = new List<PrefetchingBehavior>(prefetchingBehaviors)
+                {
+                    newPrefetcher
+                };
 
-		public void AfterDelete(string key, Etag deletedEtag)
-		{
-			foreach (var behavior in prefetchingBehaviors)
-			{
-				behavior.Value.AfterDelete(key, deletedEtag);
-			}
-		}
+                return newPrefetcher;
+            }
+        }
 
-		public void AfterUpdate(string key, Etag etagBeforeUpdate)
-		{
-			foreach (var behavior in prefetchingBehaviors)
-			{
-				behavior.Value.AfterUpdate(key, etagBeforeUpdate);
-			}
-		}
+        public void RemovePrefetchingBehavior(PrefetchingBehavior prefetchingBehavior)
+        {
+            lock (this)
+            {
+                prefetchingBehaviors = new List<PrefetchingBehavior>(prefetchingBehaviors.Except(new[]
+                {
+                    prefetchingBehavior
+                }));
 
-		public int GetInMemoryIndexingQueueSize(PrefetchingUser user)
-		{
-			PrefetchingBehavior value;
-			if (prefetchingBehaviors.TryGetValue(user, out value))
-				return value.InMemoryIndexingQueueSize;
-			return -1;
-		}
+                prefetchingBehavior.Dispose();
+            }
+        }
 
-		public void AfterStorageCommitBeforeWorkNotifications(PrefetchingUser user, JsonDocument[] documents)
-		{
-			PrefetchingBehavior value;
-			if (prefetchingBehaviors.TryGetValue(user, out value) == false)
-				return;
-			value.AfterStorageCommitBeforeWorkNotifications(documents);
-		}
-	}
+        public void AfterDelete(string key, Etag deletedEtag)
+        {
+            foreach (var behavior in prefetchingBehaviors)
+            {
+                behavior.AfterDelete(key, deletedEtag);
+            }
+        }
+
+        public int[] GetInMemoryIndexingQueueSizes(PrefetchingUser user)
+        {
+            return prefetchingBehaviors.Where(x => x.PrefetchingUser == user).Select(value => value.InMemoryIndexingQueueSize).ToArray();
+        }
+
+        public void AfterStorageCommitBeforeWorkNotifications(PrefetchingUser user, JsonDocument[] documents)
+        {
+            foreach (var prefetcher in prefetchingBehaviors.Where(x => x.PrefetchingUser == user))
+            {
+                prefetcher.AfterStorageCommitBeforeWorkNotifications(documents);
+            }
+        }
+
+        private int GetPrefetchintBehavioursCount()
+        {
+            return prefetchingBehaviors.Count;
+        }
+
+        private PrefetchingSummary GetPrefetchingBehaviourSummary()
+        {
+            var summary = new PrefetchingSummary();
+
+            foreach (var prefetcher in prefetchingBehaviors)
+            {
+                var prefetchingBehaviorSummary = prefetcher.GetSummary();
+                summary.PrefetchingQueueLoadedSize += prefetchingBehaviorSummary.PrefetchingQueueLoadedSize;
+                summary.PrefetchingQueueDocsCount += prefetchingBehaviorSummary.PrefetchingQueueDocsCount;
+                summary.FutureIndexBatchesLoadedSize += prefetchingBehaviorSummary.FutureIndexBatchesLoadedSize;
+                summary.FutureIndexBatchesDocsCount += prefetchingBehaviorSummary.FutureIndexBatchesDocsCount;
+            }
+
+            return summary;
+        }
+
+        public void Dispose()
+        {
+            foreach (var prefetchingBehavior in prefetchingBehaviors)
+            {
+                prefetchingBehavior.Dispose();
+            }
+        }
+
+        public void HandleLowMemory()
+        {
+            foreach (var prefetchingBehavior in prefetchingBehaviors)
+            {
+                prefetchingBehavior.ClearQueueAndFutureBatches();
+            }
+        }
+
+        public void SoftMemoryRelease()
+        {
+            
+        }
+
+        // todo: consider removing ILowMemoryHandler implementation, because the prefetching behaviors already implement it
+        public LowMemoryHandlerStatistics GetStats()
+        {
+            return new LowMemoryHandlerStatistics()
+            {
+                Name = "Prefetcher",
+                DatabaseName = workContext.DatabaseName,
+                EstimatedUsedMemory = 0
+            };
+        }
+    }
 }

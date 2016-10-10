@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -25,8 +25,8 @@
 
 namespace Raven.Imports.Newtonsoft.Json.Tests.TestObjects
 {
-  public interface IPrivateOverriddenImplementation
-  {
-    object OverriddenProperty { get; set; }
-  }
+    public interface IPrivateOverriddenImplementation
+    {
+        object OverriddenProperty { get; set; }
+    }
 }

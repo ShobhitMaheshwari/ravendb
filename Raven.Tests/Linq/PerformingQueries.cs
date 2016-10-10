@@ -3,27 +3,28 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Raven.Abstractions.Indexing;
 using Raven.Database.Config;
 using Raven.Json.Linq;
 using Raven.Abstractions.MEF;
-using Raven.Database.Indexing;
 using Raven.Database.Json;
 using Raven.Database.Linq;
 using Raven.Database.Plugins;
+
 using Xunit;
 
 namespace Raven.Tests.Linq
 {
-    public class PerformingQueries
+    public class PerformingQueries : IDisposable
     {
         private const string query =
             @"
-	from doc in docs
-	where doc.type == ""page""
-	select new { Key = doc.title, Value = doc.content, Size = doc.size };
+    from doc in docs
+    where doc.type == ""page""
+    select new { Key = doc.title, Value = doc.content, Size = doc.size };
 ";
 
         [Fact]
@@ -41,10 +42,10 @@ namespace Raven.Tests.Linq
             var actual = compiledQuery.MapDefinitions[0](documents)
                 .Cast<object>().ToArray();
             var expected = new[]
-			{
-				"{ Key = hello, Value = foobar, Size = 2, __document_id = 1 }",
-				"{ Key = there, Value = foobar 2, Size = 3, __document_id = 2 }"
-			};
+            {
+                "{ Key = hello, Value = foobar, Size = 2, __document_id = 1 }",
+                "{ Key = there, Value = foobar 2, Size = 3, __document_id = 2 }"
+            };
 
             Assert.Equal(expected.Length, actual.Length);
             for (var i = 0; i < expected.Length; i++)
@@ -67,16 +68,16 @@ select new { GeoHash = PerformingQueries.SampleGeoLocation.GeoHash(doc.loc, doc.
 "
             },
                                                       new OrderedPartCollection<AbstractDynamicCompilationExtension>
-													  {
-													  	new SampleDynamicCompilationExtension()
-													  }, ".", new InMemoryRavenConfiguration());
+                                                      {
+                                                        new SampleDynamicCompilationExtension()
+                                                      }, ".", new InMemoryRavenConfiguration());
             var compiledQuery = transformer.GenerateInstance();
             var actual = compiledQuery.MapDefinitions[0](documents)
                 .Cast<object>().ToArray();
             var expected = new[]
-			{
-				"{ GeoHash = 4#3, __document_id = 1 }",
-			};
+            {
+                "{ GeoHash = 4#3, __document_id = 1 }",
+            };
 
             Assert.Equal(expected.Length, actual.Length);
             for (var i = 0; i < expected.Length; i++)
@@ -115,6 +116,10 @@ select new { GeoHash = PerformingQueries.SampleGeoLocation.GeoHash(doc.loc, doc.
             {
                 return lon + "#" + lang;
             }
+        }
+
+        public void Dispose()
+        {
         }
     }
 }

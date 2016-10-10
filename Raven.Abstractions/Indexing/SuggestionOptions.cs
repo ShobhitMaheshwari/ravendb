@@ -2,39 +2,43 @@ using Raven.Abstractions.Data;
 
 namespace Raven.Abstractions.Indexing
 {
-	public class SuggestionOptions
-	{
-		/// <summary>
-		/// Gets or sets the string distance algorithm.
-		/// </summary>
-		/// <value>The distance. The default value is StringDistanceTypes.Levenshtein.</value>
-		public StringDistanceTypes Distance { get; set; }
+    public class SuggestionOptions
+    {
+        public SuggestionOptions()
+        {
+            Distance = SuggestionQuery.DefaultDistance;
+            Accuracy = SuggestionQuery.DefaultAccuracy;
+        }
 
-		/// <summary>
-		/// Gets or sets the accuracy.
-		/// </summary>
-		/// <value>The accuracy. The default value is 0.5f.</value>
-		public float Accuracy { get; set; }
+        /// <summary>
+        /// String distance algorithm to use. Default algorithm is Levenshtein.
+        /// </summary>
+        public StringDistanceTypes Distance { get; set; }
 
-		protected bool Equals(SuggestionOptions other)
-		{
-			return Distance == other.Distance && Accuracy.Equals(other.Accuracy);
-		}
+        /// <summary>
+        /// Suggestion accuracy. If <c>null</c> then default accuracy is used (0.5f).
+        /// </summary>
+        public float Accuracy { get; set; }
 
-		public override bool Equals(object obj)
-		{
-			if (ReferenceEquals(null, obj)) return false;
-			if (ReferenceEquals(this, obj)) return true;
-			if (obj.GetType() != this.GetType()) return false;
-			return Equals((SuggestionOptions)obj);
-		}
+        protected bool Equals(SuggestionOptions other)
+        {
+            return Distance == other.Distance && Accuracy.Equals(other.Accuracy);
+        }
 
-		public override int GetHashCode()
-		{
-			unchecked
-			{
-				return ((int)Distance * 397) ^ Accuracy.GetHashCode();
-			}
-		}
-	}
+        public override bool Equals(object obj)
+        {
+            if (ReferenceEquals(null, obj)) return false;
+            if (ReferenceEquals(this, obj)) return true;
+            if (obj.GetType() != this.GetType()) return false;
+            return Equals((SuggestionOptions)obj);
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                return ((int)Distance * 397) ^ Accuracy.GetHashCode();
+            }
+        }
+    }
 }

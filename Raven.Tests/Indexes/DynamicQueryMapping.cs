@@ -4,194 +4,174 @@
 // </copyright>
 //-----------------------------------------------------------------------
 
+using System.IO;
 using System.Linq;
-using Raven.Abstractions.Data;
 using Raven.Abstractions.Indexing;
 using Raven.Database;
 using Raven.Database.Config;
 using Raven.Database.Data;
+using Raven.Tests.Common;
+
 using Xunit;
 
 namespace Raven.Tests.Indexes
 {
-	public class DynamicQueryMapping
-	{
-		[Fact]
-		public void CanExtractTermsFromRangedQuery()
-		{
-			Database.Data.DynamicQueryMapping mapping =
-				Database.Data.DynamicQueryMapping.Create(new DocumentDatabase(new RavenConfiguration { RunInMemory = true }),
-														 "Term:[0 TO 10]", null);
+    public class DynamicQueryMapping : RavenTest
+    {
+        private DocumentDatabase CreateDocumentDatabase()
+        {
+            var configuration = new RavenConfiguration();
+            configuration.DataDirectory = Path.Combine(NewDataPath(), "System");
+            configuration.RunInMemory = configuration.DefaultStorageTypeName == InMemoryRavenConfiguration.VoronTypeName;
+            return new DocumentDatabase(configuration);
+        }
 
-			Assert.Equal("Term", mapping.Items[0].From);
-		}
+        [Fact]
+        public void CanExtractTermsFromRangedQuery()
+        {
+            using (var database = CreateDocumentDatabase())
+            {
+                Database.Data.DynamicQueryMapping mapping =
+                Database.Data.DynamicQueryMapping.Create(database,
+                                                         "Term:[0 TO 10]", null);
 
+                Assert.Equal("Term", mapping.Items[0].From);
+            }
+        }
 
-		[Fact]
-		public void CanExtractTermsFromEqualityQuery()
-		{
-			Database.Data.DynamicQueryMapping mapping =
-				Database.Data.DynamicQueryMapping.Create(new DocumentDatabase(new RavenConfiguration { RunInMemory = true }),
-														 "Term:Whatever", null);
+        [Fact]
+        public void CanExtractTermsFromEqualityQuery()
+        {
+            using (var database = CreateDocumentDatabase())
+            {
+                Database.Data.DynamicQueryMapping mapping = Database.Data.DynamicQueryMapping.Create(database, "Term:Whatever", null);
 
-			Assert.Equal("Term", mapping.Items[0].From);
-		}
-
-
-		[Fact]
-		public void CanExtractMultipleTermsQuery()
-		{
-			Database.Data.DynamicQueryMapping mapping =
-				Database.Data.DynamicQueryMapping.Create(new DocumentDatabase(new RavenConfiguration { RunInMemory = true }),
-														 "Term:Whatever OR Term2:[0 TO 10]", null);
-
-
-			Assert.Equal(2, mapping.Items.Length);
-
-			Assert.True(mapping.Items.Any(x => x.From == "Term"));
-
-			Assert.True(mapping.Items.Any(x => x.From == "Term2"));
-		}
+                Assert.Equal("Term", mapping.Items[0].From);
+            }
+        }
 
 
-		[Fact]
-		public void CanExtractTermsFromComplexQuery()
-		{
-			Database.Data.DynamicQueryMapping mapping =
-				Database.Data.DynamicQueryMapping.Create(new DocumentDatabase(new RavenConfiguration { RunInMemory = true }),
-														 "+(Term:bar Term2:baz) +Term3:foo -Term4:rob", null);
-
-			Assert.Equal(4, mapping.Items.Length);
-
-			Assert.True(mapping.Items.Any(x => x.From == "Term"));
-
-			Assert.True(mapping.Items.Any(x => x.From == "Term2"));
-
-			Assert.True(mapping.Items.Any(x => x.From == "Term3"));
-
-			Assert.True(mapping.Items.Any(x => x.From == "Term4"));
-		}
+        [Fact]
+        public void CanExtractMultipleTermsQuery()
+        {
+            using (var database = CreateDocumentDatabase())
+            {
+                Database.Data.DynamicQueryMapping mapping = Database.Data.DynamicQueryMapping.Create(database, "Term:Whatever OR Term2:[0 TO 10]", null);
 
 
-		[Fact]
-		public void CanExtractMultipleNestedTermsQuery()
-		{
-			Database.Data.DynamicQueryMapping mapping =
-				Database.Data.DynamicQueryMapping.Create(new DocumentDatabase(new RavenConfiguration { RunInMemory = true }),
-														 "Term:Whatever OR (Term2:Whatever AND Term3:Whatever)", null);
+                Assert.Equal(2, mapping.Items.Length);
 
-			Assert.Equal(3, mapping.Items.Length);
+                Assert.True(mapping.Items.Any(x => x.From == "Term"));
 
-			Assert.True(mapping.Items.Any(x => x.From == "Term"));
-
-			Assert.True(mapping.Items.Any(x => x.From == "Term2"));
-
-			Assert.True(mapping.Items.Any(x => x.From == "Term3"));
-		}
+                Assert.True(mapping.Items.Any(x => x.From == "Term2"));
+            }
+        }
 
 
-		[Fact]
-		public void CreateDefinitionSupportsSimpleProperties()
-		{
-			var mapping = new Database.Data.DynamicQueryMapping
+        [Fact]
+        public void CanExtractTermsFromComplexQuery()
+        {
+            using (var database = CreateDocumentDatabase())
+            {
+                Database.Data.DynamicQueryMapping mapping = Database.Data.DynamicQueryMapping.Create(database, "+(Term:bar Term2:baz) +Term3:foo -Term4:rob", null);
 
-			{
-				Items = new[]
-				{
-					new DynamicQueryMappingItem
-					{
-						From = "Name",
-						To = "Name"
-					}
-				}
-			};
+                Assert.Equal(4, mapping.Items.Length);
 
+                Assert.True(mapping.Items.Any(x => x.From == "Term"));
 
-			IndexDefinition definition = mapping.CreateIndexDefinition();
+                Assert.True(mapping.Items.Any(x => x.From == "Term2"));
 
-			Assert.Equal("from doc in docs\r\nselect new { Name = doc.Name }", definition.Map);
-		}
+                Assert.True(mapping.Items.Any(x => x.From == "Term3"));
+
+                Assert.True(mapping.Items.Any(x => x.From == "Term4"));
+            }
+        }
 
 
-		[Fact]
-		public void CreateDefinitionSupportsArrayProperties()
-		{
-			var mapping = new Database.Data.DynamicQueryMapping
+        [Fact]
+        public void CanExtractMultipleNestedTermsQuery()
+        {
+            using (var database = CreateDocumentDatabase())
+            {
+                Database.Data.DynamicQueryMapping mapping =
+                Database.Data.DynamicQueryMapping.Create(database,
+                                                         "Term:Whatever OR (Term2:Whatever AND Term3:Whatever)", null);
 
-			{
-				Items = new[]
-				{
-					new DynamicQueryMappingItem
-					{
-						From = "Tags,Name",
-						To = "docTagsName"
-					}
-				}
-			};
+                Assert.Equal(3, mapping.Items.Length);
 
+                Assert.True(mapping.Items.Any(x => x.From == "Term"));
 
-			IndexDefinition definition = mapping.CreateIndexDefinition();
+                Assert.True(mapping.Items.Any(x => x.From == "Term2"));
 
-			Assert.Equal(
-				"from doc in docs\r\nfrom docTagsItem in ((IEnumerable<dynamic>)doc.Tags).DefaultIfEmpty()\r\nselect new { docTagsName = docTagsItem.Name }",
-				definition.Map);
-		}
+                Assert.True(mapping.Items.Any(x => x.From == "Term3"));
+            }
+        }
 
+        [Fact]
+        public void CreateDefinitionSupportsSimpleProperties()
+        {
+            var mapping = new Database.Data.DynamicQueryMapping
 
-		[Fact]
-		public void CreateDefinitionSupportsNestedProperties()
-		{
-			var mapping = new Database.Data.DynamicQueryMapping
-
-			{
-				Items = new[]
-				{
-					new DynamicQueryMappingItem
-					{
-						From = "User.Name",
-						To = "UserName"
-					}
-				}
-			};
+            {
+                Items = new[]
+                {
+                    new DynamicQueryMappingItem
+                    {
+                        From = "Name",
+                        To = "Name"
+                    }
+                }
+            };
 
 
-			IndexDefinition definition = mapping.CreateIndexDefinition();
+            IndexDefinition definition = mapping.CreateIndexDefinition();
 
-			Assert.Equal("from doc in docs\r\nselect new { UserName = doc.User.Name }", definition.Map);
-		}
-
-
-		[Fact]
-		public void CreateMapReduceIndex()
-		{
-			var mapping = new Database.Data.DynamicQueryMapping
-			{
-				AggregationOperation = AggregationOperation.Count,
-				Items = new[]
-				{
-					new DynamicQueryMappingItem
-					{
-						From = "User.Name",
-						To = "UserName"
-					}
-				}
-			};
+            Assert.Equal("from doc in docs\nselect new {\n\tName = doc.Name\n}", definition.Map);
+        }
 
 
-			IndexDefinition definition = mapping.CreateIndexDefinition();
+        [Fact]
+        public void CreateDefinitionSupportsArrayProperties()
+        {
+            var mapping = new Database.Data.DynamicQueryMapping
 
-			Assert.Equal(@"from doc in docs
-select new { UserName = doc.User.Name, Count = 1 }", definition.Map);
+            {
+                Items = new[]
+                {
+                    new DynamicQueryMappingItem
+                    {
+                        From = "Tags,Name",
+                        To = "docTagsName"
+                    }
+                }
+            };
 
-			Assert.Equal(@"from result in results
-group result by result.UserName
-into g
-select new
-{
-	UserName = g.Key,
-	Count = g.Sum(x=>x.Count)
-}
-", definition.Reduce);
-		}
-	}
+            IndexDefinition definition = mapping.CreateIndexDefinition();
+
+            const string map = "from doc in docs\nselect new {\n\tdocTagsName = (\n\t\tfrom docTagsItem in ((IEnumerable<dynamic>)doc.Tags).DefaultIfEmpty()\n\t\tselect docTagsItem.Name).ToArray()\n}";
+
+            Assert.Equal(map,definition.Map);
+        }
+
+
+        [Fact]
+        public void CreateDefinitionSupportsNestedProperties()
+        {
+            var mapping = new Database.Data.DynamicQueryMapping
+            {
+                Items = new[]
+                {
+                    new DynamicQueryMappingItem
+                    {
+                        From = "User.Name",
+                        To = "UserName"
+                    }
+                }
+            };
+
+            IndexDefinition definition = mapping.CreateIndexDefinition();
+
+            Assert.Equal("from doc in docs\nselect new {\n\tUserName = doc.User.Name\n}", definition.Map);
+        }
+    }
 }

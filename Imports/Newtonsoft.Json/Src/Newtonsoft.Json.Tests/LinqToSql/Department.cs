@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -32,12 +32,12 @@ using System.Text;
 
 namespace Raven.Imports.Newtonsoft.Json.Tests.LinqToSql
 {
-  [MetadataType(typeof(DepartmentMetadata))]
-  public partial class Department
-  {
-    [JsonConverter(typeof(DepartmentConverter))]
-    public class DepartmentMetadata
+    [MetadataType(typeof(DepartmentMetadata))]
+    public partial class Department
     {
+        [JsonConverter(typeof(DepartmentConverter))]
+        public class DepartmentMetadata
+        {
+        }
     }
-  }
 }

@@ -10,53 +10,54 @@ using Raven.Client.Embedded;
 using Raven.Json.Linq;
 using Raven.Database;
 using Raven.Database.Config;
+using Raven.Tests.Common;
 using Raven.Tests.Storage;
 using Xunit;
 
 namespace Raven.Tests.Indexes
 {
-	public class ComplexIndexOnNotAnalyzedField: RavenTest
-	{
-		private readonly EmbeddableDocumentStore store;
-		private readonly DocumentDatabase db;
+    public class ComplexIndexOnNotAnalyzedField: RavenTest
+    {
+        private readonly EmbeddableDocumentStore store;
+        private readonly DocumentDatabase db;
 
-		public ComplexIndexOnNotAnalyzedField()
-		{
-			store = NewDocumentStore();
-			db = store.DocumentDatabase;
-		}
+        public ComplexIndexOnNotAnalyzedField()
+        {
+            store = NewDocumentStore();
+            db = store.SystemDatabase;
+        }
 
-		public override void Dispose()
-		{
-			store.Dispose();
-			base.Dispose();
-		}
+        public override void Dispose()
+        {
+            store.Dispose();
+            base.Dispose();
+        }
 
-		[Fact]
-		public void CanQueryOnKey()
-		{
-			db.Put("companies/", null,
-			       RavenJObject.Parse("{'Name':'Hibernating Rhinos', 'Partners': ['companies/49', 'companies/50']}"), 
-				   RavenJObject.Parse("{'Raven-Entity-Name': 'Companies'}"),
-			       null);
+        [Fact]
+        public void CanQueryOnKey()
+        {
+            db.Documents.Put("companies/", null,
+                   RavenJObject.Parse("{'Name':'Hibernating Rhinos', 'Partners': ['companies/49', 'companies/50']}"), 
+                   RavenJObject.Parse("{'Raven-Entity-Name': 'Companies'}"),
+                   null);
 
 
-			db.PutIndex("CompaniesByPartners", new IndexDefinition
-			{
-				Map = "from company in docs.Companies from partner in company.Partners select new { Partner = partner }",
-			});
+            db.Indexes.PutIndex("CompaniesByPartners", new IndexDefinition
+            {
+                Map = "from company in docs.Companies from partner in company.Partners select new { Partner = partner }",
+            });
 
-			QueryResult queryResult;
-			do
-			{
-				queryResult = db.Query("CompaniesByPartners", new IndexQuery
-				{
-					Query = "Partner:companies/49",
-					PageSize = 10
-				}, CancellationToken.None);
-			} while (queryResult.IsStale);
+            QueryResult queryResult;
+            do
+            {
+                queryResult = db.Queries.Query("CompaniesByPartners", new IndexQuery
+                {
+                    Query = "Partner:companies/49",
+                    PageSize = 10
+                }, CancellationToken.None);
+            } while (queryResult.IsStale);
 
-			Assert.Equal("Hibernating Rhinos", queryResult.Results[0].Value<string>("Name"));
-		}
-	}
+            Assert.Equal("Hibernating Rhinos", queryResult.Results[0].Value<string>("Name"));
+        }
+    }
 }

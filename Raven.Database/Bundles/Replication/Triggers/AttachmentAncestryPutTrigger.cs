@@ -3,6 +3,7 @@
 //     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 // </copyright>
 //-----------------------------------------------------------------------
+using System;
 using System.ComponentModel.Composition;
 using System.IO;
 using Raven.Abstractions.Data;
@@ -13,72 +14,72 @@ using Raven.Json.Linq;
 
 namespace Raven.Bundles.Replication.Triggers
 {
-	[ExportMetadata("Bundle", "Replication")]
-	[ExportMetadata("Order", 10000)]
-	[InheritedExport(typeof(AbstractAttachmentPutTrigger))]
-	public class AttachmentAncestryPutTrigger : AbstractAttachmentPutTrigger
-	{
-		internal ReplicationHiLo HiLo
-		{
-			get
-			{
-				return (ReplicationHiLo)Database.ExtensionsState.GetOrAdd(typeof(ReplicationHiLo).AssemblyQualifiedName, o => new ReplicationHiLo
-				{
-					Database = Database
-				});
-			}
-		}
+    [ExportMetadata("Bundle", "Replication")]
+    [ExportMetadata("Order", 10000)]
+    [InheritedExport(typeof(AbstractAttachmentPutTrigger))]
+    [Obsolete("Use RavenFS instead.")]
+    public class AttachmentAncestryPutTrigger : AbstractAttachmentPutTrigger
+    {
 
-		public override void OnPut(string key, Stream data, RavenJObject metadata)
-		{
-			if (key.StartsWith("Raven/")) // we don't deal with system attachment
-				return;
-			using (Database.DisableAllTriggersForCurrentThread())
-			{
-				var attachmentMetadata = GetAttachmentMetadata(key);
-				if (attachmentMetadata != null)
-				{
-					RavenJArray history = new RavenJArray(ReplicationData.GetHistory(metadata));
-					metadata[Constants.RavenReplicationHistory] = history;
+        public override void OnPut(string key, Stream data, RavenJObject metadata)
+        {
+            if (key.StartsWith("Raven/")) // we don't deal with system attachment
+                return;
 
-					if (attachmentMetadata.ContainsKey(Constants.RavenReplicationVersion) &&
-						attachmentMetadata.ContainsKey(Constants.RavenReplicationSource))
-					{
-						history.Add(new RavenJObject
-						{
-							{Constants.RavenReplicationVersion, attachmentMetadata[Constants.RavenReplicationVersion]},
-							{Constants.RavenReplicationSource, attachmentMetadata[Constants.RavenReplicationSource]}
-						});
-					}
+            using (Database.DisableAllTriggersForCurrentThread())
+            {
+                var attachmentMetadata = GetAttachmentMetadata(key);
+                if (attachmentMetadata != null)
+                {
+                    RavenJArray history = new RavenJArray(ReplicationData.GetHistory(metadata));
+                    metadata[Constants.RavenReplicationHistory] = history;
 
-					while (history.Length > Constants.ChangeHistoryLength)
-					{
-						history.RemoveAt(0);
-					}
-				}
+                    if (attachmentMetadata.ContainsKey(Constants.RavenReplicationVersion) &&
+                        attachmentMetadata.ContainsKey(Constants.RavenReplicationSource))
+                    {
+                        history.Add(new RavenJObject
+                        {
+                            {Constants.RavenReplicationVersion, attachmentMetadata[Constants.RavenReplicationVersion]},
+                            {Constants.RavenReplicationSource, attachmentMetadata[Constants.RavenReplicationSource]}
+                        });
+                    }
+                    else
+                    {
+                        history.Add(new RavenJObject
+                        {
+                            {Constants.RavenReplicationVersion, 0},
+                            {Constants.RavenReplicationSource, RavenJToken.FromObject(Database.TransactionalStorage.Id)}
+                        });
+                    }
 
-				metadata[Constants.RavenReplicationVersion] = RavenJToken.FromObject(HiLo.NextId());
-				metadata[Constants.RavenReplicationSource] = RavenJToken.FromObject(Database.TransactionalStorage.Id);
-			}
-		}
+                    while (history.Length > Constants.ChangeHistoryLength)
+                    {
+                        history.RemoveAt(0);
+                    }
+                }
 
-		private RavenJObject GetAttachmentMetadata(string key)
-		{
-			var attachment = Database.GetStatic(key);
-			if(attachment != null)
-				return attachment.Metadata;
+                metadata[Constants.RavenReplicationVersion] = RavenJToken.FromObject(ReplicationHiLo.NextId(Database));
+                metadata[Constants.RavenReplicationSource] = RavenJToken.FromObject(Database.TransactionalStorage.Id);
+            }
+        }
 
-			RavenJObject result = null;
-			Database.TransactionalStorage.Batch(accessor =>
-			{
-				var tombstone = accessor.Lists.Read(Constants.RavenReplicationAttachmentsTombstones, key);
-				if (tombstone == null)
-					return;
-				result = tombstone.Data;
-				accessor.Lists.Remove(Constants.RavenReplicationAttachmentsTombstones, key);
-			});
+        private RavenJObject GetAttachmentMetadata(string key)
+        {
+            var attachment = Database.Attachments.GetStatic(key);
+            if(attachment != null)
+                return attachment.Metadata;
 
-			return result;
-		}
-	}
+            RavenJObject result = null;
+            Database.TransactionalStorage.Batch(accessor =>
+            {
+                var tombstone = accessor.Lists.Read(Constants.RavenReplicationAttachmentsTombstones, key);
+                if (tombstone == null)
+                    return;
+                result = tombstone.Data;
+                accessor.Lists.Remove(Constants.RavenReplicationAttachmentsTombstones, key);
+            });
+
+            return result;
+        }
+    }
 }

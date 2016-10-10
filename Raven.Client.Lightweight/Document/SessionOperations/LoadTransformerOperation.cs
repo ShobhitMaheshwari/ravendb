@@ -1,97 +1,111 @@
-﻿#if !SILVERLIGHT
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Extensions;
+using Raven.Client.Connection;
 using Raven.Json.Linq;
 
 namespace Raven.Client.Document.SessionOperations
 {
-	public class LoadTransformerOperation
-	{
-		private readonly DocumentSession documentSession;
-		private readonly string transformer;
-		private readonly string[] ids;
+    public class LoadTransformerOperation
+    {
+        private readonly InMemoryDocumentSessionOperations documentSession;
+        private readonly string transformer;
+        private readonly string[] ids;
 
-		public LoadTransformerOperation(DocumentSession documentSession, string transformer, string[] ids)
-		{
-			this.documentSession = documentSession;
-			this.transformer = transformer;
-			this.ids = ids;
-		}
+        public LoadTransformerOperation(InMemoryDocumentSessionOperations documentSession, string transformer, string[] ids)
+        {
+            this.documentSession = documentSession;
+            this.transformer = transformer;
+            this.ids = ids;
+        }
 
-		public T[] Complete<T>(MultiLoadResult multiLoadResult)
-		{
-			if (typeof (T).IsArray)
-			{
-			    var arrayOfArrays = multiLoadResult.Results
-			                                       .Select(x =>
-			                                       {
-			                                           if (x == null)
-			                                               return null;
+        public T[] Complete<T>(MultiLoadResult multiLoadResult)
+        {
+            foreach (var include in SerializationHelper.RavenJObjectsToJsonDocuments(multiLoadResult.Includes))
+            {
+                documentSession.TrackIncludedDocument(include);
+            }
 
-			                                           var values = x.Value<RavenJArray>("$values").Cast<RavenJObject>();
+            if (typeof (T).IsArray)
+            {
+                var arrayOfArrays = multiLoadResult.Results
+                                                   .Select(x =>
+                                                   {
+                                                       if (x == null)
+                                                           return null;
 
-			                                           var elementType = typeof (T).GetElementType();
-			                                           var array = values.Select(value =>
-			                                           {
+                                                       var values = x.Value<RavenJArray>("$values").Cast<RavenJObject>();
+
+                                                       var elementType = typeof (T).GetElementType();
+                                                       var array = values.Select(value =>
+                                                       {
                                                            EnsureNotReadVetoed(value);
-			                                               return documentSession.ProjectionToInstance(value, elementType);
-			                                           }).ToArray();
-			                                           var newArray = Array.CreateInstance(elementType, array.Length);
-			                                           Array.Copy(array, newArray, array.Length);
-			                                           return newArray;
-			                                       })
-			                                       .Cast<T>()
-			                                       .ToArray();
+                                                           return documentSession.ProjectionToInstance(value, elementType);
+                                                       }).ToArray();
+                                                       var newArray = Array.CreateInstance(elementType, array.Length);
+                                                       Array.Copy(array, newArray, array.Length);
+                                                       return newArray;
+                                                   })
+                                                   .Cast<T>()
+                                                   .ToArray();
 
-				return arrayOfArrays;
-			}
+                return arrayOfArrays;
+            }
 
-			var items = ParseResults<T>(multiLoadResult.Results)
-				.ToArray();
+            var items = ParseResults<T>(multiLoadResult.Results)
+                .ToArray();
 
-			if (items.Length > ids.Length)
-			{
-				throw new InvalidOperationException(String.Format("A load was attempted with transformer {0}, and more than one item was returned per entity - please use {1}[] as the projection type instead of {1}",
-					transformer,
-					typeof (T).Name));
-			}
+            if (items.Length > ids.Length)
+            {
+                throw new InvalidOperationException(String.Format("A load was attempted with transformer {0}, and more than one item was returned per entity - please use {1}[] as the projection type instead of {1}",
+                    transformer,
+                    typeof (T).Name));
+            }
 
-			return items;
-		}
+            return items;
+        }
 
-		private IEnumerable<T> ParseResults<T>(List<RavenJObject> results)
-		{
-			foreach (var result in results)
-			{
-				if (result == null)
-				{
-					yield return default(T);
-					continue;
-				}
+        private IEnumerable<T> ParseResults<T>(List<RavenJObject> results)
+        {
+            foreach (var result in results)
+            {
+                if (result == null)
+                {
+                    yield return default(T);
+                    continue;
+                }
 
-			    EnsureNotReadVetoed(result);
+                EnsureNotReadVetoed(result);
+                var queryOperation = new QueryOperation(this.documentSession, "Load/Transformer", null, null, false, TimeSpan.Zero, null, null, false);
 
-				var values = result.Value<RavenJArray>("$values").ToArray();
-				foreach (var value in values)
-				{
-					var ravenJObject = JsonExtensions.ToJObject(value);
-					var obj = (T) documentSession.ProjectionToInstance(ravenJObject, typeof (T));
-					yield return obj;
-				}
-			}
-		}
+                var values = result.Value<RavenJArray>("$values").ToArray();
+                foreach (var value in values)
+                {
+                  
+                    var ravenJObject = JsonExtensions.ToJObject(value);
+                    foreach (var documentConversionListener in documentSession.Listeners.ConversionListeners)
+                    {
+                        documentConversionListener.BeforeConversionToEntity(null, ravenJObject, null);
+                    }
+                    var obj = queryOperation.Deserialize<T>(ravenJObject);
+                    foreach (var documentConversionListener in documentSession.Listeners.ConversionListeners)
+                    {
+                        documentConversionListener.AfterConversionToEntity(null, ravenJObject, null, obj);
+                    }
+                    yield return obj;
+                }
+            }
+        }
 
-	    private bool EnsureNotReadVetoed(RavenJObject result)
-	    {
+        private bool EnsureNotReadVetoed(RavenJObject result)
+        {
             var metadata = result.Value<RavenJObject>(Constants.Metadata);
             if (metadata != null)
                 documentSession.EnsureNotReadVetoed(metadata); // this will throw on read veto
 
-	        return true;
-	    }
-	}
+            return true;
+        }
+    }
 }
-#endif

@@ -11,42 +11,43 @@ using Raven.Database;
 using Raven.Database.Config;
 using Raven.Abstractions.Exceptions;
 using Raven.Database.Plugins;
+using Raven.Tests.Common;
 using Raven.Tests.Storage;
 using Xunit;
 
 namespace Raven.Tests.Triggers
 {
-	public class AttachmentDeleteTrigger: RavenTest
-	{
-		private readonly EmbeddableDocumentStore store;
-		private readonly DocumentDatabase db;
+    public class AttachmentDeleteTrigger: RavenTest
+    {
+        private readonly EmbeddableDocumentStore store;
+        private readonly DocumentDatabase db;
 
-		public AttachmentDeleteTrigger()
-		{
-			store = NewDocumentStore(catalog:(new TypeCatalog(typeof (RefuseAttachmentDeleteTrigger))));
-			db = store.DocumentDatabase;
-		}
+        public AttachmentDeleteTrigger()
+        {
+            store = NewDocumentStore(catalog:(new TypeCatalog(typeof (RefuseAttachmentDeleteTrigger))));
+            db = store.SystemDatabase;
+        }
 
-		public override void Dispose()
-		{
-			store.Dispose();
-			base.Dispose();
-		}
+        public override void Dispose()
+        {
+            store.Dispose();
+            base.Dispose();
+        }
 
-		[Fact]
-		public void CanVetoDeletes()
-		{
-			db.PutStatic("ayende", null, new MemoryStream(new byte[] { 1, 2, 3 }), new RavenJObject());
-			var operationVetoedException = Assert.Throws<OperationVetoedException>(()=>db.DeleteStatic("ayende", null));
-			Assert.Equal("DELETE vetoed on attachment ayende by Raven.Tests.Triggers.AttachmentDeleteTrigger+RefuseAttachmentDeleteTrigger because: Can't delete attachments", operationVetoedException.Message);
-		}
+        [Fact]
+        public void CanVetoDeletes()
+        {
+            db.Attachments.PutStatic("ayende", null, new MemoryStream(new byte[] { 1, 2, 3 }), new RavenJObject());
+            var operationVetoedException = Assert.Throws<OperationVetoedException>(()=>db.Attachments.DeleteStatic("ayende", null));
+            Assert.Equal("DELETE vetoed on attachment ayende by Raven.Tests.Triggers.AttachmentDeleteTrigger+RefuseAttachmentDeleteTrigger because: Can't delete attachments", operationVetoedException.Message);
+        }
 
-		public class RefuseAttachmentDeleteTrigger: AbstractAttachmentDeleteTrigger
-		{
-			public override VetoResult AllowDelete(string key)
-			{
-				return VetoResult.Deny("Can't delete attachments");
-			}
-		}
-	}
+        public class RefuseAttachmentDeleteTrigger: AbstractAttachmentDeleteTrigger
+        {
+            public override VetoResult AllowDelete(string key)
+            {
+                return VetoResult.Deny("Can't delete attachments");
+            }
+        }
+    }
 }

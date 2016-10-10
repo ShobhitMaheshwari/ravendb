@@ -1,14 +1,18 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 //  <copyright file="ScriptedIndexResultsIndexTrigger.cs" company="Hibernating Rhinos LTD">
 //      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 //  </copyright>
 // -----------------------------------------------------------------------
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
+using System.Threading;
 using Lucene.Net.Documents;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Logging;
+using Raven.Database.Indexing;
 using Raven.Database.Json;
 using Raven.Database.Plugins;
 using Raven.Abstractions.Extensions;
@@ -22,173 +26,207 @@ namespace Raven.Database.Bundles.ScriptedIndexResults
     [ExportMetadata("Bundle", "ScriptedIndexResults")]
     public class ScriptedIndexResultsIndexTrigger : AbstractIndexUpdateTrigger
     {
-        private static ILog log = LogManager.GetCurrentClassLogger();
+        private static readonly ILog Log = LogManager.GetCurrentClassLogger();
 
-        public override AbstractIndexUpdateTriggerBatcher CreateBatcher(string indexName)
+        public override AbstractIndexUpdateTriggerBatcher CreateBatcher(int indexId)
         {
             //Only apply the trigger if there is a setup doc for this particular index
-            var jsonSetupDoc = Database.Get(Abstractions.Data.ScriptedIndexResults.IdPrefix + indexName, null);
+            Index indexInstance = Database.IndexStorage.GetIndexInstance(indexId);
+            if (indexInstance == null)
+                return null;
+            var jsonSetupDoc = Database.Documents.Get(Abstractions.Data.ScriptedIndexResults.IdPrefix + indexInstance.PublicName, null);
             if (jsonSetupDoc == null)
                 return null;
             var scriptedIndexResults = jsonSetupDoc.DataAsJson.JsonDeserialization<Abstractions.Data.ScriptedIndexResults>();
-            scriptedIndexResults.Id = indexName;
-            var abstractViewGenerator = Database.IndexDefinitionStorage.GetViewGenerator(indexName);
+            var abstractViewGenerator = Database.IndexDefinitionStorage.GetViewGenerator(indexId);
             if (abstractViewGenerator == null)
-                throw new InvalidOperationException("Could not find view generator for: " + indexName);
+                throw new InvalidOperationException("Could not find view generator for: " + indexInstance.PublicName);
+            scriptedIndexResults.Id = indexInstance.PublicName;
             return new Batcher(Database, scriptedIndexResults, abstractViewGenerator.ForEntityNames);
         }
 
         public class Batcher : AbstractIndexUpdateTriggerBatcher
         {
+            private static readonly ILog Log = LogManager.GetCurrentClassLogger();
+
             private readonly DocumentDatabase database;
             private readonly Abstractions.Data.ScriptedIndexResults scriptedIndexResults;
             private readonly HashSet<string> forEntityNames;
 
-            private readonly Dictionary<string, RavenJObject> created = new Dictionary<string, RavenJObject>(StringComparer.InvariantCultureIgnoreCase);
-            private readonly HashSet<string> removed = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+            private readonly ConcurrentDictionary<string, ConcurrentBag<RavenJObject>> created = new ConcurrentDictionary<string, ConcurrentBag<RavenJObject>>(StringComparer.InvariantCultureIgnoreCase);
+            private readonly ConcurrentDictionary<string, ConcurrentBag<RavenJObject>> removed = new ConcurrentDictionary<string, ConcurrentBag<RavenJObject>>(StringComparer.InvariantCultureIgnoreCase);
 
             public Batcher(DocumentDatabase database, Abstractions.Data.ScriptedIndexResults scriptedIndexResults, HashSet<string> forEntityNames)
             {
                 this.database = database;
                 this.scriptedIndexResults = scriptedIndexResults;
                 this.forEntityNames = forEntityNames;
+
+                if (Log.IsDebugEnabled)
+                    Log.Debug("Created ScriptedIndexResultsBatcher for {0}", scriptedIndexResults.Id);
             }
+
+            public override bool RequiresDocumentOnIndexEntryDeleted { get { return true; } }
 
             public override void OnIndexEntryCreated(string entryKey, Document document)
             {
-                created.Add(entryKey, CreateJsonDocumentFromLuceneDocument(document));
-                removed.Remove(entryKey);
+                var bag = created.GetOrAdd(entryKey, _ => new ConcurrentBag<RavenJObject>());
+
+                if (Log.IsDebugEnabled)
+                    Log.Debug("Schedule create with key {0} for scripted index results {1}", entryKey, scriptedIndexResults.Id);
+
+                bag.Add(CreateJsonDocumentFromLuceneDocument(document));
             }
 
-            public override void OnIndexEntryDeleted(string entryKey)
+            public override void OnIndexEntryDeleted(string entryKey, Document document = null)
             {
-                removed.Add(entryKey);
+                var bag = removed.GetOrAdd(entryKey, _ => new ConcurrentBag<RavenJObject>());
+                
+                if (Log.IsDebugEnabled)
+                    Log.Debug("Schedule delete with key {0} for scripted index results {1}", entryKey, scriptedIndexResults.Id);
+
+                bag.Add(document != null ? CreateJsonDocumentFromLuceneDocument(document) : new RavenJObject());
             }
 
             public override void Dispose()
             {
-                var patcher = new ScriptedIndexResultsJsonPatcher(database, forEntityNames);
+                bool shouldRetry = false;
+                int retries = 128;
+                Random rand = null;
 
-                if (string.IsNullOrEmpty(scriptedIndexResults.DeleteScript) == false)
+                do
                 {
-                    foreach (var removeKey in removed)
+                    using (shouldRetry ? database.TransactionalStorage.DisableBatchNesting() : null)
                     {
-                        patcher.Apply(new RavenJObject(), new ScriptedPatchRequest
+                        var patcher = new ScriptedJsonPatcher(database);
+                        using (var scope = new ScriptedIndexResultsJsonPatcherScope(database, forEntityNames))
                         {
-                            Script = scriptedIndexResults.DeleteScript,
-                            Values =
-							{
-								{"key", removeKey}
-							}
-                        });
-
-                        if (log.IsDebugEnabled && patcher.Debug.Count > 0)
-                        {
-                            log.Debug("Debug output for doc: {0} for index {1} (delete):\r\n.{2}", removeKey, scriptedIndexResults.Id, string.Join("\r\n", patcher.Debug));
-
-                            patcher.Debug.Clear();
-                        }
-
-                    }
-                }
-
-                if (string.IsNullOrEmpty(scriptedIndexResults.IndexScript) == false)
-                {
-                    foreach (var kvp in created)
-                    {
-                        try
-                        {
-                            patcher.Apply(kvp.Value, new ScriptedPatchRequest
+                            if (string.IsNullOrEmpty(scriptedIndexResults.DeleteScript) == false)
                             {
-                                Script = scriptedIndexResults.IndexScript,
-                                Values =
+                                foreach (var kvp in removed)
                                 {
-                                    {"key", kvp.Key}
-                                }
-                            });
-                        }
-                        catch (Exception e)
-                        {
-                            log.Warn(
-                                "Could not apply index script " + scriptedIndexResults.Id +
-                                " to index result with key: " + kvp.Key, e);
-                        }
-                        finally
-                        {
-                            if (log.IsDebugEnabled && patcher.Debug.Count > 0)
-                            {
-                                log.Debug("Debug output for doc: {0} for index {1} (index):\r\n.{2}", kvp.Key, scriptedIndexResults.Id, string.Join("\r\n", patcher.Debug));
+                                    foreach (var entry in kvp.Value)
+                                    {
+                                        try
+                                        {
+                                            patcher.Apply(scope, entry, new ScriptedPatchRequest
+                                            {
+                                                Script = scriptedIndexResults.DeleteScript,
+                                                Values =
+                                                {
+                                                    {
+                                                        "key", kvp.Key
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        catch (Exception e)
+                                        {
+                                            Log.WarnException("Could not apply delete script " + scriptedIndexResults.Id + " to index result with key: " + kvp.Key, e);
+                                        }
+                                        finally
+                                        {
+                                            if (Log.IsDebugEnabled && patcher.Debug.Count > 0)
+                                            {
+                                                Log.Debug("Debug output for doc: {0} for index {1} (delete):\r\n.{2}", kvp.Key, scriptedIndexResults.Id, string.Join("\r\n", patcher.Debug));
 
-                                patcher.Debug.Clear();
+                                                patcher.Debug.Clear();
+                                            }
+                                        }
+                                    }
+
+                                }
+                            }
+
+                            if (string.IsNullOrEmpty(scriptedIndexResults.IndexScript) == false)
+                            {
+                                foreach (var kvp in created)
+                                {
+                                    try
+                                    {
+                                        foreach (var entry in kvp.Value)
+                                        {
+                                            patcher.Apply(scope, entry, new ScriptedPatchRequest
+                                            {
+                                                Script = scriptedIndexResults.IndexScript,
+                                                Values =
+                                                {
+                                                    {
+                                                        "key", kvp.Key
+                                                    }
+                                                }
+                                            });
+                                        }
+
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        Log.WarnException("Could not apply index script " + scriptedIndexResults.Id + " to index result with key: " + kvp.Key, e);
+                                    }
+                                    finally
+                                    {
+                                        if (Log.IsDebugEnabled && patcher.Debug.Count > 0)
+                                        {
+                                            Log.Debug("Debug output for doc: {0} for index {1} (index):\r\n.{2}", kvp.Key, scriptedIndexResults.Id, string.Join("\r\n", patcher.Debug));
+
+                                            patcher.Debug.Clear();
+                                        }
+                                    }
+                                }
+                            }
+
+                            try
+                            {
+                                database.TransactionalStorage.Batch(accessor =>
+                                {
+                                    foreach (var operation in scope.GetOperations())
+                                    {
+                                        switch (operation.Type)
+                                        {
+                                            case ScriptedJsonPatcher.OperationType.Put:
+                                                if (Log.IsDebugEnabled)
+                                                    Log.Debug("Perform PUT on {0} for scripted index results {1}", operation.Document.Key, scriptedIndexResults.Id);
+
+                                                database.Documents.Put(operation.Document.Key, operation.Document.Etag, operation.Document.DataAsJson, operation.Document.Metadata, null);
+                                                break;
+                                            case ScriptedJsonPatcher.OperationType.Delete:
+                                                if (Log.IsDebugEnabled)
+                                                    Log.Debug("Perform DELETE on {0} for scripted index results {1}", operation.DocumentKey, scriptedIndexResults.Id);
+
+                                                database.Documents.Delete(operation.DocumentKey, null, null);
+                                                break;
+                                            default:
+                                                throw new ArgumentOutOfRangeException("operation.Type: " + operation.Type);
+                                        }
+                                    }
+                                });
+
+                                shouldRetry = false;
+                            }
+                            catch (ConcurrencyException ex)
+                            {
+                                if (scriptedIndexResults.RetryOnConcurrencyExceptions && retries-- > 0)
+                                {
+                                    shouldRetry = true;
+                                    if (rand == null)
+                                        rand = new Random();
+
+                                    if (Log.IsDebugEnabled)
+                                        Log.DebugException(string.Format("Applying PUT/DELETE for scripted index results {0} failed with concurrency exception. Retrying", scriptedIndexResults.Id), ex);
+
+                                    Thread.Sleep(rand.Next(5, Math.Max(retries * 2, 10)));
+
+                                    continue;
+                                }
+
+                                if (Log.IsDebugEnabled)
+                                    Log.DebugException(string.Format("Applying PUT/DELETE for scripted index results {0} failed with concurrency exception {1} times.", scriptedIndexResults.Id, 128 - retries + 1), ex);
+
+                                throw;
                             }
                         }
                     }
-                }
-
-                database.TransactionalStorage.Batch(accessor =>
-                {
-                    if (patcher.CreatedDocs != null)
-                    {
-                        foreach (var jsonDocument in patcher.CreatedDocs)
-                        {
-                            patcher.DocumentsToDelete.Remove(jsonDocument.Key);
-                            database.Put(jsonDocument.Key, jsonDocument.Etag, jsonDocument.DataAsJson, jsonDocument.Metadata, null);
-                        }
-                    }
-
-                    foreach (var doc in patcher.DocumentsToDelete)
-                    {
-                        database.Delete(doc, null, null);
-                    }
-                });
-            }
-
-            public class ScriptedIndexResultsJsonPatcher : ScriptedJsonPatcher
-            {
-                private readonly HashSet<string> entityNames;
-
-                public ScriptedIndexResultsJsonPatcher(DocumentDatabase database, HashSet<string> entityNames)
-                    : base(database)
-                {
-                    this.entityNames = entityNames;
-                }
-
-                public HashSet<string> DocumentsToDelete = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
-
-                protected override void CustomizeEngine(Jint.JintEngine jintEngine)
-                {
-                    jintEngine.SetFunction("DeleteDocument", ((Action<string>)(document => DocumentsToDelete.Add(document))));
-                }
-
-                protected override void RemoveEngineCustomizations(Jint.JintEngine jintEngine)
-                {
-                    jintEngine.RemoveParameter("DeleteDocument");
-                }
-
-                protected override void ValidateDocument(JsonDocument newDocument)
-                {
-                    if (newDocument.Metadata == null)
-                        return;
-                    var entityName = newDocument.Metadata.Value<string>(Constants.RavenEntityName);
-                    if (string.IsNullOrEmpty(entityName))
-                    {
-                        if (entityNames.Count == 0)
-                            throw new InvalidOperationException(
-                                "Invalid Script Index Results Recursion!\r\n"+
-                                "The scripted index result doesn't have an entity name, but the index apply to all documents.\r\n" +
-                                "Scripted Index Results cannot create documents that will be indexed by the same document that created them, " +
-                                "since that would create a infinite loop of indexing/creating documents.");
-                        return;
-                    }
-                    if (entityNames.Contains(entityName))
-                    {
-                        throw new InvalidOperationException(
-                            "Invalid Script Index Results Recursion!\r\n" +
-                            "The scripted index result have an entity name of "+entityName + ", but the index apply to documents with that entity name.\r\n" +
-                            "Scripted Index Results cannot create documents that will be indexed by the same document that created them, " +
-                            "since that would create a infinite loop of indexing/creating documents.");
-                    }
-                }
+                } while (shouldRetry);
             }
 
             private static RavenJObject CreateJsonDocumentFromLuceneDocument(Document document)

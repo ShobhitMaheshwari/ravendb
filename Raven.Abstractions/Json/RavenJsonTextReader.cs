@@ -1,52 +1,44 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using Raven.Imports.Newtonsoft.Json;
+using Raven.Imports.Newtonsoft.Json.Utilities;
 
 namespace Raven.Abstractions.Json
 {
-	public class RavenJsonTextReader : JsonTextReader
-	{
-		public RavenJsonTextReader(TextReader reader)
-			: base(reader)
-		{
-			DateParseHandling = DateParseHandling.None;
-		}
+    public class RavenJsonTextReader : JsonTextReader
+    {
+        public RavenJsonTextReader(TextReader reader)
+            : base(reader)
+        {
+            DateParseHandling = DateParseHandling.None;
+        }
 
-		private static TimeSpan ReadOffset(string offsetText)
-		{
-			bool negative = (offsetText[0] == '-');
+        public RavenJsonTextReader(char[] externalBuffer) : base(externalBuffer)
+        {
+            DateParseHandling = DateParseHandling.None;
+        }
 
-			int hours = int.Parse(offsetText.Substring(1, 2), NumberStyles.Integer, CultureInfo.InvariantCulture);
-			int minutes = 0;
-			if (offsetText.Length >= 5)
-				minutes = int.Parse(offsetText.Substring(3, 2), NumberStyles.Integer, CultureInfo.InvariantCulture);
+        public static DateTime ParseDateMicrosoft(string text)
+        {
+            string value = text.Substring(6, text.Length - 8);
 
-			TimeSpan offset = TimeSpan.FromHours(hours) + TimeSpan.FromMinutes(minutes);
-			if (negative)
-				offset = offset.Negate();
+            int index = value.IndexOf('+', 1);
 
-			return offset;
-		}
+            if (index == -1)
+                index = value.IndexOf('-', 1);
 
-		public static DateTime ParseDateMicrosoft(string text)
-		{
-			string value = text.Substring(6, text.Length - 8);
+            if (index != -1)
+            {
+                value = value.Substring(0, index);
+            }
 
-			int index = value.IndexOf('+', 1);
+            long javaScriptTicks = long.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
 
-			if (index == -1)
-				index = value.IndexOf('-', 1);
-
-			if (index != -1)
-			{
-				value = value.Substring(0, index);
-			}
-
-			long javaScriptTicks = long.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
-
-			DateTime utcDateTime = JsonConvert.ConvertJavaScriptTicksToDateTime(javaScriptTicks);
-			return utcDateTime;
-		}
-	}
+            DateTime utcDateTime = DateTimeUtils.ConvertJavaScriptTicksToDateTime(javaScriptTicks);
+            return utcDateTime;
+        }
+    }
 }

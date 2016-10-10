@@ -1,158 +1,162 @@
-﻿using System.Collections.Generic;
-using System.ComponentModel;
+using System.Collections.Generic;
 using System.Linq;
 using Raven.Imports.Newtonsoft.Json;
 
 namespace Raven.Abstractions.Data
 {
-	public class ApiKeyDefinition : INotifyPropertyChanged
-	{
-		public string Id { get; set; }
+    public class ApiKeyDefinition
+    {
+        /// <summary>
+        /// Document identifier.
+        /// </summary>
+        public string Id { get; set; }
 
-		private string name;
-		public string Name
-		{
-			get { return name; }
-			set
-			{
-				name = value;
-				OnPropertyChanged("Name");
-				OnPropertyChanged("FullApiKey");
-				OnPropertyChanged("ConnectionString");
-			}
-		}
+        /// <summary>
+        /// API key name.
+        /// </summary>
+        public string Name { get; set; }
 
-		private string secret;
-		public string Secret
-		{
-			get { return secret; }
-			set
-			{
-				secret = value;
-				OnPropertyChanged("Secret");
-				OnPropertyChanged("FullApiKey");
-				OnPropertyChanged("ConnectionString");
-			}
-		}
+        /// <summary>
+        /// API key secret.
+        /// </summary>
+        public string Secret { get; set; }
 
-		[JsonIgnore]
-		public string FullApiKey
-		{
-			get
-			{
-				if (string.IsNullOrWhiteSpace(Name) || string.IsNullOrWhiteSpace(Secret))
-					return "Must set both name and secret to get the full api key";
+        /// <summary>
+        /// Full API key in following format: '{Name}/{Secret}'.
+        /// </summary>
+        [JsonIgnore]
+        public string FullApiKey
+        {
+            get
+            {
+                if (string.IsNullOrWhiteSpace(Name) || string.IsNullOrWhiteSpace(Secret))
+                    return "Must set both name and secret to get the full api key";
 
-				return Name + "/" + Secret;
-			}
-		}
+                return Name + "/" + Secret;
+            }
+        }
 
-		[JsonIgnore]
-		public string ConnectionString
-		{
-			get
-			{
-				if (string.IsNullOrWhiteSpace(Name) || string.IsNullOrWhiteSpace(Secret))
-					return null;
+        /// <summary>
+        /// Connection string for API Key in following format: 'ApiKey = {FullApiKey}; Database = {DbName}'.
+        /// </summary>
+        [JsonIgnore]
+        public string ConnectionString
+        {
+            get
+            {
+                if (string.IsNullOrWhiteSpace(Name) || string.IsNullOrWhiteSpace(Secret))
+                    return null;
 
-				return string.Format(@"ApiKey = {0}; Database = {1}", FullApiKey, DbName);
-			}
-		}
+                return string.Format(@"ApiKey = {0}; Database = {1}", FullApiKey, DbName);
+            }
+        }
 
-		[JsonIgnore]
-		private string DbName
-		{
-			get 
-			{ 
-				var access = Databases.FirstOrDefault();
-				return access == null ? "DbName" : access.TenantId;
-			}
-		}
+        /// <summary>
+        /// Returns Id of a first database. Null if there are no databases defined for this key.
+        /// </summary>
+        [JsonIgnore]
+        private string DbName
+        {
+            get
+            {
+                var access = Databases.FirstOrDefault();
+                return access == null ? "DbName" : access.TenantId;
+            }
+        }
 
-		public bool Enabled { get; set; }
+        /// <summary>
+        /// Indicates if API key is enabled or not.
+        /// </summary>
+        public bool Enabled { get; set; }
 
-		public List<DatabaseAccess> Databases { get; set; }
+        /// <summary>
+        /// List of databases (with detailed permissions) for which this API key works.
+        /// </summary>
+        public List<ResourceAccess> Databases { get; set; }
 
-	    public ApiKeyDefinition()
-	    {
-	        Databases = new List<DatabaseAccess>();
-	    }
+        public ApiKeyDefinition()
+        {
+            Databases = new List<ResourceAccess>();
+        }
 
-		public event PropertyChangedEventHandler PropertyChanged;
+        protected bool Equals(ApiKeyDefinition other)
+        {
+            var baseEqual = string.Equals(Id, other.Id) && Enabled.Equals(other.Enabled) && Equals(Databases.Count, other.Databases.Count) &&
+                   string.Equals(Secret, other.Secret) && string.Equals(Name, other.Name);
 
-		protected virtual void OnPropertyChanged(string propertyName)
-		{
-			PropertyChangedEventHandler handler = PropertyChanged;
-			if (handler != null) handler(this, new PropertyChangedEventArgs(propertyName));
-		}
+            if (baseEqual == false)
+                return false;
 
-		protected bool Equals(ApiKeyDefinition other)
-		{
-			var baseEqual =  string.Equals(Id, other.Id) && Enabled.Equals(other.Enabled) && Equals(Databases.Count, other.Databases.Count) &&
-			       string.Equals(Secret, other.Secret) && string.Equals(Name, other.Name);
+            for (var i = 0; i < Databases.Count; i++)
+            {
+                if (Databases[i].Equals(other.Databases[i]) == false)
+                    return false;
+            }
 
-			if(baseEqual == false)
-				return false;
+            return true;
+        }
 
-			for (int i = 0; i < Databases.Count; i++)
-			{
-				if (Databases[i].Equals(other.Databases[i]) == false)
-					return false;
-			}
+        public override bool Equals(object obj)
+        {
+            if (ReferenceEquals(null, obj)) return false;
+            if (ReferenceEquals(this, obj)) return true;
+            if (obj.GetType() != GetType()) return false;
+            return Equals((ApiKeyDefinition)obj);
+        }
 
-			return true;
-		}
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                var hashCode = (Id != null ? Id.GetHashCode() : 0);
+                hashCode = (hashCode * 397) ^ Enabled.GetHashCode();
+                hashCode = (hashCode * 397) ^ (Databases != null ? Databases.GetHashCode() : 0);
+                hashCode = (hashCode * 397) ^ (Secret != null ? Secret.GetHashCode() : 0);
+                hashCode = (hashCode * 397) ^ (Name != null ? Name.GetHashCode() : 0);
+                return hashCode;
+            }
+        }
+    }
 
-		public override bool Equals(object obj)
-		{
-			if (ReferenceEquals(null, obj)) return false;
-			if (ReferenceEquals(this, obj)) return true;
-			if (obj.GetType() != this.GetType()) return false;
-			return Equals((ApiKeyDefinition) obj);
-		}
+    public class ResourceAccess
+    {
+        /// <summary>
+        /// Indicates if administrative acesss should be granted.
+        /// </summary>
+        public bool Admin { get; set; }
 
-		public override int GetHashCode()
-		{
-			unchecked
-			{
-				var hashCode = (Id != null ? Id.GetHashCode() : 0);
-				hashCode = (hashCode*397) ^ Enabled.GetHashCode();
-				hashCode = (hashCode*397) ^ (Databases != null ? Databases.GetHashCode() : 0);
-				hashCode = (hashCode*397) ^ (secret != null ? secret.GetHashCode() : 0);
-				hashCode = (hashCode*397) ^ (name != null ? name.GetHashCode() : 0);
-				return hashCode;
-			}
-		}
-	}
+        /// <summary>
+        /// Id a database.
+        /// </summary>
+        public string TenantId { get; set; }
 
-	public class DatabaseAccess
-	{
-		public bool Admin { get; set; }
-		public string TenantId { get; set; }
-		public bool ReadOnly { get; set; }
+        /// <summary>
+        /// Indicates if read-only acesss should be granted.
+        /// </summary>
+        public bool ReadOnly { get; set; }
 
-		protected bool Equals(DatabaseAccess other)
-		{
-			return Admin.Equals(other.Admin) && string.Equals(TenantId, other.TenantId) && ReadOnly.Equals(other.ReadOnly);
-		}
+        protected bool Equals(ResourceAccess other)
+        {
+            return Admin.Equals(other.Admin) && string.Equals(TenantId, other.TenantId) && ReadOnly.Equals(other.ReadOnly);
+        }
 
-		public override bool Equals(object obj)
-		{
-			if (ReferenceEquals(null, obj)) return false;
-			if (ReferenceEquals(this, obj)) return true;
-			if (obj.GetType() != this.GetType()) return false;
-			return Equals((DatabaseAccess) obj);
-		}
+        public override bool Equals(object obj)
+        {
+            if (ReferenceEquals(null, obj)) return false;
+            if (ReferenceEquals(this, obj)) return true;
+            if (obj.GetType() != GetType()) return false;
+            return Equals((ResourceAccess)obj);
+        }
 
-		public override int GetHashCode()
-		{
-			unchecked
-			{
-				var hashCode = Admin.GetHashCode();
-				hashCode = (hashCode*397) ^ (TenantId != null ? TenantId.GetHashCode() : 0);
-				hashCode = (hashCode*397) ^ ReadOnly.GetHashCode();
-				return hashCode;
-			}
-		}
-	}
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                var hashCode = Admin.GetHashCode();
+                hashCode = (hashCode * 397) ^ (TenantId != null ? TenantId.GetHashCode() : 0);
+                hashCode = (hashCode * 397) ^ ReadOnly.GetHashCode();
+                return hashCode;
+            }
+        }
+    }
 }

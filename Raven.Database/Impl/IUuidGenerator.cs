@@ -9,8 +9,9 @@ using Raven.Abstractions.Data;
 
 namespace Raven.Database.Impl
 {
-	public interface IUuidGenerator
-	{
-		Etag CreateSequentialUuid(UuidType type);
-	}
+    public interface IUuidGenerator
+    {
+        long LastDocumentTransactionEtag { get; }
+        Etag CreateSequentialUuid(UuidType type);
+    }
 }

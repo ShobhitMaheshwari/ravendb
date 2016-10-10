@@ -6,226 +6,269 @@ using ICSharpCode.NRefactory.CSharp;
 
 namespace Raven.Database.Linq.Ast
 {
-	[CLSCompliant(false)]
-	public class ThrowOnInvalidMethodCalls : DepthFirstAstVisitor<object, object>
-	{
-		public class ForbiddenMethod
-		{
-			public string[] TypeAliases;
-			public string[] Names;
-			public string Error;
+    [CLSCompliant(false)]
+    public class ThrowOnInvalidMethodCalls : DepthFirstAstVisitor<object, object>
+    {
+        public class ForbiddenMethod
+        {
+            public string[] TypeAliases;
+            public string[] Names;
+            public string Error;
 
-			public ForbiddenMethod(string[] names, string[] typeAliases, string error)
-			{
-				TypeAliases = typeAliases;
-				Names = names;
-				Error = error;
-			}
-		}
+            public ForbiddenMethod(string[] names, string[] typeAliases, string error)
+            {
+                TypeAliases = typeAliases;
+                Names = names;
+                Error = error;
+            }
+        }
 
-		private readonly string groupByIdentifier;
+        private readonly string groupByIdentifier;
 
-		public ThrowOnInvalidMethodCalls(string groupByIdentifier)
-		{
-			this.groupByIdentifier = groupByIdentifier;
-		}
+        public ThrowOnInvalidMethodCalls(string groupByIdentifier)
+        {
+            this.groupByIdentifier = groupByIdentifier;
+        }
 
-		public List<ForbiddenMethod> Members = new List<ForbiddenMethod>
-		{
-			new ForbiddenMethod(
-				names: new[] { "Now", "UtcNow" },
-				typeAliases: new[] { "DateTime", "System.DateTime", "DateTimeOffset", "System.DateTimeOffset", "SystemTime", "Abstractions.SystemTime", "Raven.Abstractions.SystemTime" },
-				error: @"Cannot use {0} during a map or reduce phase.
+        public List<ForbiddenMethod> Members = new List<ForbiddenMethod>
+        {
+            new ForbiddenMethod(
+                names: new[] { "Now", "UtcNow" },
+                typeAliases: new[] { "DateTime", "System.DateTime", "DateTimeOffset", "System.DateTimeOffset", "SystemTime", "Abstractions.SystemTime", "Raven.Abstractions.SystemTime" },
+                error: @"Cannot use {0} during a map or reduce phase.
 The map or reduce functions must be referentially transparent, that is, for the same set of values, they always return the same results.
 Using {0} invalidate that premise, and is not allowed"),
-		};
+        };
 
-		public override object VisitQueryOrderClause(QueryOrderClause queryOrderClause, object data)
-		{
-			var text = QueryParsingUtils.ToText(queryOrderClause);
-			throw new InvalidOperationException(
-				@"OrderBy calls are not valid during map or reduce phase, but the following was found:
+        public override object VisitQueryOrderClause(QueryOrderClause queryOrderClause, object data)
+        {
+            var text = QueryParsingUtils.ToText(queryOrderClause);
+            throw new InvalidOperationException(
+                @"OrderBy calls are not valid during map or reduce phase, but the following was found:
 " + text + @"
 OrderBy calls modify the indexing output, but doesn't actually impact the order of results returned from the database.
 You should be calling OrderBy on the QUERY, not on the index, if you want to specify ordering.");
-		}
+        }
 
-		public override object VisitQueryLetClause(QueryLetClause queryLetClause, object data)
-		{
-			if (SimplifyLetExpression(queryLetClause.Expression) is LambdaExpression)
-			{
-				var text = QueryParsingUtils.ToText(queryLetClause);
-				throw new SecurityException("Let expression cannot contain lambda expressions, but got: " + text);
-			}
+        public override object VisitQueryLetClause(QueryLetClause queryLetClause, object data)
+        {
+            if (SimplifyLetExpression(queryLetClause.Expression) is LambdaExpression)
+            {
+                var text = QueryParsingUtils.ToText(queryLetClause);
+                throw new SecurityException("Let expression cannot contain lambda expressions, but got: " + text);
+            }
 
-			return base.VisitQueryLetClause(queryLetClause, data);
-		}
+            return base.VisitQueryLetClause(queryLetClause, data);
+        }
 
-		public override object VisitInvocationExpression(InvocationExpression invocationExpression, object data)
-		{
-			if (!string.IsNullOrEmpty(groupByIdentifier))
-			{
-				var memberReferenceExpression = invocationExpression.Target as MemberReferenceExpression;
-				if (memberReferenceExpression != null)
-				{
-					var identifier = memberReferenceExpression.Target as IdentifierExpression;
-					if (identifier != null && identifier.Identifier == groupByIdentifier)
-					{
-						if (memberReferenceExpression.MemberName == "Count")
-							throw new InvalidOperationException("Reduce cannot contain Count() methods in grouping.");
+        public override object VisitInvocationExpression(InvocationExpression invocationExpression, object data)
+        {
+            if (!string.IsNullOrEmpty(groupByIdentifier))
+                AssertInvocationExpression(invocationExpression);
 
-						if (memberReferenceExpression.MemberName == "Average")
-							throw new InvalidOperationException("Reduce cannot contain Average() methods in grouping.");
-					}
-				}
-			}
+            return base.VisitInvocationExpression(invocationExpression, data);
+        }
 
-			return base.VisitInvocationExpression(invocationExpression, data);
-		}
+        protected virtual void AssertInvocationExpression(InvocationExpression invocation)
+        {
+            var memberReferenceExpression = invocation.Target as MemberReferenceExpression;
+            if (memberReferenceExpression != null)
+            {
+                var identifier = memberReferenceExpression.Target as IdentifierExpression;
+                if (identifier != null && identifier.Identifier == groupByIdentifier)
+                {
+                    if (memberReferenceExpression.MemberName == "Count")
+                        throw new InvalidOperationException("Reduce cannot contain Count() methods in grouping.");
 
-		private Expression SimplifyLetExpression(Expression expression)
-		{
-			var castExpression = expression as CastExpression;
-			if (castExpression != null)
-				return SimplifyLetExpression(castExpression.Expression);
-			var parenthesizedExpression = expression as ParenthesizedExpression;
-			if (parenthesizedExpression != null)
-				return SimplifyLetExpression(parenthesizedExpression.Expression);
-			return expression;
-		}
+                    if (memberReferenceExpression.MemberName == "Average")
+                        throw new InvalidOperationException("Reduce cannot contain Average() methods in grouping.");
+                }
+            }
+        }
 
-		public override object VisitLambdaExpression(LambdaExpression lambdaExpression, object data)
-		{
-			if (lambdaExpression.Body == null || lambdaExpression.Body.IsNull)
-				return base.VisitLambdaExpression(lambdaExpression, data);
-			if (lambdaExpression.Body is BlockStatement == false)
-				return base.VisitLambdaExpression(lambdaExpression, data);
+        private Expression SimplifyLetExpression(Expression expression)
+        {
+            var castExpression = expression as CastExpression;
+            if (castExpression != null)
+                return SimplifyLetExpression(castExpression.Expression);
+            var parenthesizedExpression = expression as ParenthesizedExpression;
+            if (parenthesizedExpression != null)
+                return SimplifyLetExpression(parenthesizedExpression.Expression);
+            return expression;
+        }
 
-			var text = QueryParsingUtils.ToText(lambdaExpression);
-			throw new SecurityException("Lambda expression can only consist of a single expression, not a statement, but got: " + text);
-		}
+        public override object VisitLambdaExpression(LambdaExpression lambdaExpression, object data)
+        {
+            if (lambdaExpression.Body == null || lambdaExpression.Body.IsNull)
+                return base.VisitLambdaExpression(lambdaExpression, data);
+            if (lambdaExpression.Body is BlockStatement == false)
+                return base.VisitLambdaExpression(lambdaExpression, data);
 
-		public override object VisitMemberReferenceExpression(MemberReferenceExpression memberReferenceExpression, object data)
-		{
-			foreach (var forbidden in Members.Where(x => x.Names.Contains(memberReferenceExpression.MemberName)))
-			{
-				var identifierExpression = GetTarget(memberReferenceExpression);
-				if (forbidden.TypeAliases.Contains(identifierExpression) == false)
-					continue;
+            var text = QueryParsingUtils.ToText(lambdaExpression);
+            throw new SecurityException("Lambda expression can only consist of a single expression, not a statement, but got: " + text);
+        }
 
-				var text = QueryParsingUtils.ToText(memberReferenceExpression);
-				throw new InvalidOperationException(string.Format(forbidden.Error, text));
-			}
+        public override object VisitMemberReferenceExpression(MemberReferenceExpression memberReferenceExpression, object data)
+        {
+            foreach (var forbidden in Members.Where(x => x.Names.Contains(memberReferenceExpression.MemberName)))
+            {
+                var identifierExpression = GetTarget(memberReferenceExpression);
+                if (forbidden.TypeAliases.Contains(identifierExpression) == false)
+                    continue;
 
-			return base.VisitMemberReferenceExpression(memberReferenceExpression, data);
-		}
+                var text = QueryParsingUtils.ToText(memberReferenceExpression);
+                throw new InvalidOperationException(string.Format(forbidden.Error, text));
+            }
 
-		public override object VisitSimpleType(SimpleType simpleType, object data)
-		{
-			if (simpleType.Identifier.Contains("IGrouping"))
-			{
-				HandleGroupBy(simpleType);
-			}
+            return base.VisitMemberReferenceExpression(memberReferenceExpression, data);
+        }
 
-			return base.VisitSimpleType(simpleType, data);
-		}
+        public override object VisitSimpleType(SimpleType simpleType, object data)
+        {
+            if (simpleType.Identifier.Contains("IGrouping"))
+            {
+                HandleGroupBy(simpleType);
+            }
 
-		private void HandleGroupBy(SimpleType simpleType)
-		{
-			if (string.IsNullOrEmpty(groupByIdentifier))
-				return;
+            return base.VisitSimpleType(simpleType, data);
+        }
 
-			var initializer = simpleType.Ancestors.OfType<VariableInitializer>().Single();
-			var rootExpression = (InvocationExpression) initializer.Initializer;
+        public override object VisitQueryContinuationClause(QueryContinuationClause queryContinuationClause, object data)
+        {
+            var result = base.VisitQueryContinuationClause(queryContinuationClause, data);
+            if (groupByIdentifier == null)
+                return result;
 
-			var nodes = rootExpression.Children.Where(x => x.NodeType != NodeType.Token).ToList();
-			if (nodes.Count < 2)
-				return;
+            var queryGroupClause = queryContinuationClause.PrecedingQuery.Clauses.LastOrNullObject() as QueryGroupClause;
+            if(queryGroupClause == null)
+                return result;
 
-			var memberReferences = nodes.OfType<MemberReferenceExpression>().ToList();
-			if (!memberReferences.Any())
-				return;
+            var queryExpression = queryContinuationClause.Parent as QueryExpression;
+            if(queryExpression == null)
+                return result;
 
-			var groupByExpression = memberReferences.FirstOrDefault(ContainsGroupBy);
-			if (groupByExpression == null)
-				return;
+            bool foundIt = false;
+            foreach (var queryClause in queryExpression.Clauses)
+            {
+                if (foundIt == false)
+                {
+                    foundIt = queryClause == queryContinuationClause;
+                    continue;
+                }
+                foreach (var invocationExpression in queryClause.Descendants.OfType<InvocationExpression>())
+                {
+                    AssertInvocationExpression(invocationExpression, queryContinuationClause.Identifier);
+                }
+            }
 
-			var indexOfGroupByExpression = nodes.IndexOf(groupByExpression);
-			if (indexOfGroupByExpression != 0)
-				return;
+            return result;
+        }
 
-			var castExpression = nodes[indexOfGroupByExpression + 1] as CastExpression;
-			if (castExpression == null)
-				return;
+        private void HandleGroupBy(SimpleType simpleType)
+        {
+            if (string.IsNullOrEmpty(groupByIdentifier))
+                return;
 
-			if (castExpression.Descendants.Contains(simpleType) == false)
-				return;
+            var initializer = simpleType.Ancestors.OfType<VariableInitializer>().Single();
+            var rootExpression = initializer.Initializer as InvocationExpression;
+            if (rootExpression == null)
+            {
+                return;
+            }
 
-			foreach (var ancestor in simpleType.Ancestors)
-			{
-				if (ancestor == groupByExpression || groupByExpression.Ancestors.Contains(ancestor) || groupByExpression.Descendants.Contains(ancestor))
-					continue;
+            var nodes = rootExpression.Children.Where(x => x.NodeType != NodeType.Token).ToList();
+            if (nodes.Count < 2)
+                return;
 
-				if (ancestor.Children.OfType<MemberReferenceExpression>().Any(ContainsGroupBy))
-					return;
-			}
+            var memberReferences = nodes.OfType<MemberReferenceExpression>().ToList();
+            if (!memberReferences.Any())
+                return;
 
-			var grouping = simpleType.NextSibling;
+            var groupByExpression = memberReferences.FirstOrDefault(ContainsGroupBy);
+            if (groupByExpression == null)
+                return;
 
-			var lambda = grouping.Children.OfType<LambdaExpression>().First();
-			var parameter = lambda.Parameters.First();
+            var indexOfGroupByExpression = nodes.IndexOf(groupByExpression);
+            if (indexOfGroupByExpression != 0)
+                return;
 
-			foreach (var invocation in lambda.Descendants.OfType<InvocationExpression>())
-			{
-				var identifiers = invocation.Descendants.OfType<IdentifierExpression>().Where(x => x.Identifier == parameter.Name);
+            var castExpression = nodes[indexOfGroupByExpression + 1] as CastExpression;
+            if (castExpression == null)
+                return;
 
-				foreach (var identifier in identifiers)
-				{
-					var parent = identifier.Parent as InvocationExpression;
-					if (parent == null)
-						continue;
+            if (castExpression.Descendants.Contains(simpleType) == false)
+                return;
 
-					var member = (MemberReferenceExpression) parent.Target;
+            foreach (var ancestor in simpleType.Ancestors)
+            {
+                if (ancestor == groupByExpression || groupByExpression.Ancestors.Contains(ancestor) || groupByExpression.Descendants.Contains(ancestor))
+                    continue;
 
-					if (member.MemberName == "Count")
-						throw new InvalidOperationException("Reduce cannot contain Count() methods in grouping.");
+                if (ancestor.Children.OfType<MemberReferenceExpression>().Any(ContainsGroupBy))
+                    return;
+            }
 
-					if (member.MemberName == "Average")
-						throw new InvalidOperationException("Reduce cannot contain Average() methods in grouping.");
-				}
-			}
-		}
+            var grouping = simpleType.NextSibling;
 
-		private static bool ContainsGroupBy(MemberReferenceExpression possibleGroupByExpression)
-		{
-			if (possibleGroupByExpression == null)
-				return false;
+            var lambda = grouping.Children.OfType<LambdaExpression>().First();
+            var parameter = lambda.Parameters.First();
 
-			if (possibleGroupByExpression.MemberName == "GroupBy")
-				return true;
+            foreach (var invocation in lambda.Descendants.OfType<InvocationExpression>())
+            {
+                AssertInvocationExpression(invocation, parameter.Name);
+            }
+        }
 
-			var invocation = possibleGroupByExpression.Target as InvocationExpression;
-			if (invocation == null)
-				return false;
+        protected virtual void AssertInvocationExpression(InvocationExpression invocation, string name)
+        {
+            var identifiers = invocation.Descendants.OfType<IdentifierExpression>().Where(x => x.Identifier == name);
 
-			var member = invocation.Target as MemberReferenceExpression;
-			if (member == null)
-				return false;
+            foreach (var identifier in identifiers)
+            {
+                var parent = identifier.Parent as InvocationExpression;
+                if (parent == null)
+                    continue;
 
-			return ContainsGroupBy(member);
-		}
+                var member = (MemberReferenceExpression)parent.Target;
 
-		private static string GetTarget(MemberReferenceExpression memberReferenceExpression)
-		{
-			var identifierExpression = memberReferenceExpression.Target as IdentifierExpression;
-			if (identifierExpression != null)
-				return identifierExpression.Identifier;
+                if (member.MemberName == "Count")
+                    throw new InvalidOperationException("Reduce cannot contain Count() methods in grouping.");
 
-			var mre = memberReferenceExpression.Target as MemberReferenceExpression;
-			if (mre != null)
-				return GetTarget(mre) + "." + mre.MemberName;
+                if (member.MemberName == "Average")
+                    throw new InvalidOperationException("Reduce cannot contain Average() methods in grouping.");
+            }
+        }
 
-			return null;
-		}
-	}
+        private static bool ContainsGroupBy(MemberReferenceExpression possibleGroupByExpression)
+        {
+            if (possibleGroupByExpression == null)
+                return false;
+
+            if (possibleGroupByExpression.MemberName == "GroupBy")
+                return true;
+
+            var invocation = possibleGroupByExpression.Target as InvocationExpression;
+            if (invocation == null)
+                return false;
+
+            var member = invocation.Target as MemberReferenceExpression;
+            if (member == null)
+                return false;
+
+            return ContainsGroupBy(member);
+        }
+
+        private static string GetTarget(MemberReferenceExpression memberReferenceExpression)
+        {
+            var identifierExpression = memberReferenceExpression.Target as IdentifierExpression;
+            if (identifierExpression != null)
+                return identifierExpression.Identifier;
+
+            var mre = memberReferenceExpression.Target as MemberReferenceExpression;
+            if (mre != null)
+                return GetTarget(mre) + "." + mre.MemberName;
+
+            return null;
+        }
+    }
 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
@@ -8,6 +8,9 @@ using Raven.Client;
 using Raven.Client.Document;
 using Raven.Client.Linq;
 using Raven.Imports.Newtonsoft.Json;
+using Raven.Tests.Common.Attributes;
+using Raven.Tests.Common.Dto.Faceted;
+
 using Xunit;
 
 namespace Raven.Tests.Faceted
@@ -122,7 +125,7 @@ namespace Raven.Tests.Faceted
                 //change index etag by inserting new doc
                 InsertCameraDataAndWaitForNonStaleResults(store, GetCameras(1));
 
-				Etag secondEtag;
+                Etag secondEtag;
 
                 //changing the index should give 200 OK
                 Assert.Equal(HttpStatusCode.OK, ConditionalGetHelper.PerformPost(requestUrl, jsonFacets, firstEtag, out secondEtag));

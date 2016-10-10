@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -25,13 +25,13 @@
 
 namespace Newtonsoft.Json.Tests.TestObjects
 {
-  public class PersonPropertyClass
-  {
-    public Person Person { get; set; }
-
-    public PersonPropertyClass()
+    public class PersonPropertyClass
     {
-      Person = new WagePerson();
+        public Person Person { get; set; }
+
+        public PersonPropertyClass()
+        {
+            Person = new WagePerson();
+        }
     }
-  }
 }

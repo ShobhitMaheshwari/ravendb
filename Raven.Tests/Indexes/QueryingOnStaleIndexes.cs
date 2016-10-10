@@ -11,82 +11,85 @@ using Raven.Json.Linq;
 using Raven.Client.Indexes;
 using Raven.Database;
 using Raven.Database.Config;
+using Raven.Tests.Common;
 using Raven.Tests.Storage;
 using Xunit;
 
 namespace Raven.Tests.Indexes
 {
-	public class QueryingOnStaleIndexes: RavenTest
-	{
-		private readonly EmbeddableDocumentStore store;
-		private readonly DocumentDatabase db;
+    public class QueryingOnStaleIndexes: RavenTest
+    {
+        private readonly EmbeddableDocumentStore store;
+        private readonly DocumentDatabase db;
 
-		public QueryingOnStaleIndexes()
-		{
-			store = NewDocumentStore();
-			db = store.DocumentDatabase;
-			db.PutIndex(new RavenDocumentsByEntityName().IndexName, new RavenDocumentsByEntityName().CreateIndexDefinition());
-		}
+        public QueryingOnStaleIndexes()
+        {
+            store = NewDocumentStore();
+            db = store.SystemDatabase;
+            db.Indexes.PutIndex(new RavenDocumentsByEntityName().IndexName, new RavenDocumentsByEntityName().CreateIndexDefinition());
+        }
 
-		public override void Dispose()
-		{
-			store.Dispose();
-			base.Dispose();
-		}
+        public override void Dispose()
+        {
+            store.Dispose();
+            base.Dispose();
+        }
 
-		[Fact]
-		public void WillGetStaleResultWhenThereArePendingTasks()
-		{
-			db.Put("a", null, new RavenJObject(), new RavenJObject(), null);
+        [Fact]
+        public void WillGetStaleResultWhenThereArePendingTasks()
+        {
+            db.WorkContext.StopIndexing();
 
-			Assert.True(db.Query("Raven/DocumentsByEntityName", new IndexQuery
-			{
-				PageSize = 2,
-				Start = 0,
-			}, CancellationToken.None).IsStale);
-		}
+            db.Documents.Put("a", null, new RavenJObject(), new RavenJObject(), null);
 
-		[Fact]
-		public void WillGetNonStaleResultWhenAskingWithCutoffDate()
-		{
-			db.Put("a", null, new RavenJObject(), new RavenJObject(), null);
+            Assert.True(db.Queries.Query("Raven/DocumentsByEntityName", new IndexQuery
+            {
+                PageSize = 2,
+                Start = 0,
+            }, CancellationToken.None).IsStale);
+        }
 
-			for (int i = 0; i < 500; i++)
-			{
-				var queryResult = db.Query("Raven/DocumentsByEntityName", new IndexQuery
-				{
-					PageSize = 2,
-					Start = 0,
-				}, CancellationToken.None);
-				if (queryResult.IsStale == false)
-					break;
-				Thread.Sleep(100);
-			}
+        [Fact]
+        public void WillGetNonStaleResultWhenAskingWithCutoffDate()
+        {
+            db.Documents.Put("a", null, new RavenJObject(), new RavenJObject(), null);
 
-			Assert.False(db.Query("Raven/DocumentsByEntityName", new IndexQuery
-			{
-				PageSize = 2,
-				Start = 0,
-			}, CancellationToken.None).IsStale);
+            for (int i = 0; i < 500; i++)
+            {
+                var queryResult = db.Queries.Query("Raven/DocumentsByEntityName", new IndexQuery
+                {
+                    PageSize = 2,
+                    Start = 0,
+                }, CancellationToken.None);
+                if (queryResult.IsStale == false)
+                    break;
+                Thread.Sleep(100);
+            }
 
-			db.StopBackgroundWorkers();
+            Assert.False(db.Queries.Query("Raven/DocumentsByEntityName", new IndexQuery
+            {
+                PageSize = 2,
+                Start = 0,
+            }, CancellationToken.None).IsStale);
 
-			db.Put("a", null, new RavenJObject(), new RavenJObject(), null);
+            db.StopBackgroundWorkers();
+
+            db.Documents.Put("a", null, new RavenJObject(), new RavenJObject(), null);
 
 
-			Assert.True(db.Query("Raven/DocumentsByEntityName", new IndexQuery
-			{
-				PageSize = 2,
-				Start = 0,
-			}, CancellationToken.None).IsStale);
+            Assert.True(db.Queries.Query("Raven/DocumentsByEntityName", new IndexQuery
+            {
+                PageSize = 2,
+                Start = 0,
+            }, CancellationToken.None).IsStale);
 
-			Assert.False(db.Query("Raven/DocumentsByEntityName", new IndexQuery
-			{
-				PageSize = 2,
-				Start = 0,
-				Cutoff = SystemTime.UtcNow.AddHours(-1)
-			}, CancellationToken.None).IsStale);
-		}
-		
-	}
+            Assert.False(db.Queries.Query("Raven/DocumentsByEntityName", new IndexQuery
+            {
+                PageSize = 2,
+                Start = 0,
+                Cutoff = SystemTime.UtcNow.AddHours(-1)
+            }, CancellationToken.None).IsStale);
+        }
+        
+    }
 }

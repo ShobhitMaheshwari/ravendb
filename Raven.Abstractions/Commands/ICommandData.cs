@@ -8,50 +8,45 @@ using Raven.Json.Linq;
 
 namespace Raven.Abstractions.Commands
 {
-	/// <summary>
-	/// A single operation inside a batch
-	/// </summary>
-	public interface ICommandData
-	{
-		/// <summary>
-		/// Gets the key.
-		/// </summary>
-		/// <value>The key.</value>
-		string Key { get; }
+    /// <summary>
+    /// A single operation inside a batch
+    /// </summary>
+    public interface ICommandData
+    {
+        /// <summary>
+        /// Key of a document.
+        /// </summary>
+        string Key { get; }
 
-		/// <summary>
-		/// Gets the method.
-		/// </summary>
-		/// <value>The method.</value>
-		string Method { get; }
+        /// <summary>
+        /// Returns operation method.
+        /// </summary>
+        string Method { get; }
 
-		/// <summary>
-		/// Gets the etag.
-		/// </summary>
-		/// <value>The etag.</value>
-		Etag Etag { get; }
+        /// <summary>
+        /// Current document etag, used for concurrency checks (null to skip check)
+        /// </summary>
+        Etag Etag { get; }
 
-		/// <summary>
-		/// Gets the transaction information.
-		/// </summary>
-		/// <value>The transaction information.</value>
-		TransactionInformation TransactionInformation { get; set; }
+        /// <summary>
+        /// Information used to identify a transaction. Contains transaction Id and timeout.
+        /// </summary>
+        TransactionInformation TransactionInformation { get; set; }
 
-		/// <summary>
-		/// Gets the metadata.
-		/// </summary>
-		/// <value>The metadata.</value>
-		RavenJObject Metadata { get; }
+        /// <summary>
+        /// RavenJObject representing document's metadata.
+        /// </summary>
+        RavenJObject Metadata { get; }
 
-		/// <summary>
-		/// Gets the Additional Data.
-		/// </summary>
-		/// <value>The Additional Data.</value>
-		RavenJObject AdditionalData { get; set; }
+        /// <summary>
+        /// Additional command data. For internal use only.
+        /// </summary>
+        RavenJObject AdditionalData { get; set; }
 
-		/// <summary>
-		/// Translate this instance to a Json object.
-		/// </summary>
-		RavenJObject ToJson();
-	}
+        /// <summary>
+        /// Translates this instance to a Json object.
+        /// </summary>
+        /// <returns>RavenJObject representing the command.</returns>
+        RavenJObject ToJson();
+    }
 }

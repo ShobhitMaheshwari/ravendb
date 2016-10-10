@@ -17,6 +17,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 using Lucene.Net.Analysis;
@@ -25,6 +26,8 @@ using Lucene.Net.Search;
 using Lucene.Net.Index;
 using Lucene.Net.QueryParsers;
 using Lucene.Net.Store;
+using Raven.Client.Linq;
+using Raven.Database.Util;
 
 
 namespace Lucene.Net.Search.Vectorhighlight
@@ -39,25 +42,25 @@ namespace Lucene.Net.Search.Vectorhighlight
         private String fieldName;
         public LinkedList<TermInfo> termList = new LinkedList<TermInfo>();
 
-        public static void Main(String[] args)
-        {
-            Analyzer analyzer = new WhitespaceAnalyzer();
-            QueryParser parser = new QueryParser(Util.Version.LUCENE_CURRENT, "f", analyzer);
-            Query query = parser.Parse("a x:b");
-            FieldQuery fieldQuery = new FieldQuery(query, true, false);
+        //public static void Main(String[] args)
+        //{
+        //	Analyzer analyzer = new WhitespaceAnalyzer();
+        //	QueryParser parser = new QueryParser(Util.Version.LUCENE_CURRENT, "f", analyzer);
+        //	Query query = parser.Parse("a x:b");
+        //	FieldQuery fieldQuery = new FieldQuery(query, true, false);
 
-            Directory dir = new RAMDirectory();
-            IndexWriter writer = new IndexWriter(dir, analyzer, IndexWriter.MaxFieldLength.LIMITED);
-            Document doc = new Document();
-            doc.Add(new Field("f", "a a a b b c a b b c d e f", Field.Store.YES, Field.Index.ANALYZED, Field.TermVector.WITH_POSITIONS_OFFSETS));
-            doc.Add(new Field("f", "b a b a f", Field.Store.YES, Field.Index.ANALYZED, Field.TermVector.WITH_POSITIONS_OFFSETS));
-            writer.AddDocument(doc);
-            writer.Close();
+        //	Directory dir = new RAMDirectory();
+        //	IndexWriter writer = new IndexWriter(dir, analyzer, IndexWriter.MaxFieldLength.LIMITED);
+        //	Document doc = new Document();
+        //	doc.Add(new Field("f", "a a a b b c a b b c d e f", Field.Store.YES, Field.Index.ANALYZED, Field.TermVector.WITH_POSITIONS_OFFSETS));
+        //	doc.Add(new Field("f", "b a b a f", Field.Store.YES, Field.Index.ANALYZED, Field.TermVector.WITH_POSITIONS_OFFSETS));
+        //	writer.AddDocument(doc);
+        //	writer.Dispose();
 
-            IndexReader reader = IndexReader.Open(dir,true);
-            FieldTermStack ftl = new FieldTermStack(reader, 0, "f", fieldQuery);
-            reader.Close();
-        }
+        //	IndexReader reader = IndexReader.Open(dir,true);
+        //	FieldTermStack ftl = new FieldTermStack(reader, 0, "f", fieldQuery);
+        //	reader.Dispose();
+        //}
 
         /// <summary>
         /// a constructor. 
@@ -110,7 +113,7 @@ namespace Lucene.Net.Search.Vectorhighlight
             {
                 tpv = (TermPositionVector)tfv;
             }
-            catch (InvalidCastException e)
+            catch (InvalidCastException)
             {
                 return; // just return to make null snippets
             }
@@ -118,10 +121,15 @@ namespace Lucene.Net.Search.Vectorhighlight
             List<String> termSet = fieldQuery.getTermSet(fieldName);
             // just return to make null snippet if un-matched fieldName specified when fieldMatch == true
             if (termSet == null) return;
-
+            var needwildcard = termSet.Any(x => x.IndexOfAny(new char[] {'*', '?'}) != -1);
             foreach (String term in tpv.GetTerms())
             {
-                if (!termSet.Contains(term)) continue;
+                if (needwildcard)
+                {
+                    if(termSet.Any(ts => WildcardMatcher.Matches(ts, term)) == false) continue;
+                }
+                else if (!termSet.Contains(term)) continue;
+              
                 int index = tpv.IndexOf(term);
                 TermVectorOffsetInfo[] tvois = tpv.GetOffsets(index);
                 if (tvois == null) return; // just return to make null snippets

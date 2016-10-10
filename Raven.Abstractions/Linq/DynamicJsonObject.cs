@@ -40,7 +40,7 @@ namespace Raven.Abstractions.Linq
                 (
                     from item in inner
                     where item.Key[0] != '$'
-                    select new KeyValuePair<string, object>(item.Key, TransformToValue(item.Value))
+                    select new KeyValuePair<object, object>(TransformToValue(item.Key), TransformToValue(item.Value))
                 )
                 .Cast<object>().GetEnumerator();
         }
@@ -149,11 +149,21 @@ namespace Raven.Abstractions.Linq
         /// </returns>
         public override bool TryGetIndex(GetIndexBinder binder, object[] indexes, out object result)
         {
-            if (indexes.Length != 1 || indexes[0] is string == false)
+            if (indexes.Length != 1)
             {
-                result = null;
-                return false;
+                throw new InvalidOperationException("Cannot do indexing with more than a single index, but got " + indexes.Length);
             }
+            if (indexes[0] == null)
+                throw new InvalidOperationException("Cannot index using a null");
+
+            var token = indexes[0] as RavenJToken;
+            if (token != null)
+            {
+                result = GetValue(token.Value<string>());
+                return true;
+            }
+            if(indexes[0] is string == false)
+                throw new InvalidOperationException("Cannot index using " + indexes[0] + " because only strings are supported and it is a " + indexes[0].GetType());
             result = GetValue((string)indexes[0]);
             return true;
         }
@@ -190,7 +200,7 @@ namespace Raven.Abstractions.Linq
                     if (value is long)
                     {
                         var l = (long)value;
-                        if (l > int.MinValue && int.MaxValue > l)
+                        if (l >= int.MinValue && l <= int.MaxValue)
                             return (int)l;
                     }
                     if (value is Guid)
@@ -203,6 +213,9 @@ namespace Raven.Abstractions.Linq
                         //optimizations, don't try to call TryParse if empty
                         if (s.Length == 0)
                             return s;
+
+                        if (s == "NaN")
+                            return double.NaN;
 
                         //optimizations, don't try to call TryParse if first char isn't a digit or '-'
                         if (char.IsDigit(s[0]) == false && s[0] != '-')

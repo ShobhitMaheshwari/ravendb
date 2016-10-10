@@ -5,25 +5,27 @@
 //-----------------------------------------------------------------------
 using System.Linq;
 using Raven.Client.Document;
+using Raven.Tests.Common;
+
 using Xunit;
 
 namespace Raven.Tests.Bugs
 {
-	public class LinqOnUrls : RemoteClientTest
-	{
-		[Fact]
-		public void CanQueryUrlsValuesUsingLinq()
-		{
-			var port = 8079;
-			using (GetNewServer(port))
-			{
-				using (var store = new DocumentStore { Url = "http://localhost:" + port }.Initialize())
-				using (var session = store.OpenSession())
-				{
+    public class LinqOnUrls : RavenTest
+    {
+        [Fact]
+        public void CanQueryUrlsValuesUsingLinq()
+        {
+            var port = 8079;
+            using (GetNewServer(port))
+            {
+                using (var store = new DocumentStore { Url = "http://localhost:" + port }.Initialize())
+                using (var session = store.OpenSession())
+                {
 // ReSharper disable once ReturnValueOfPureMethodIsNotUsed
-					session.Query<User>().FirstOrDefault(x => x.Name == "http://www.idontexistinthecacheatall.com?test=xxx&gotcha=1");
-				}
-			}
-		}
-	}
+                    session.Query<User>().FirstOrDefault(x => x.Name == "http://www.idontexistinthecacheatall.com?test=xxx&gotcha=1");
+                }
+            }
+        }
+    }
 }

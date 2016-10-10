@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -25,14 +25,17 @@
 
 namespace Newtonsoft.Json.Tests.TestObjects
 {
-  public class ContentSubClass : ContentBaseClass
-  {
-    public ContentSubClass() { }
-    public ContentSubClass(string EasyIn)
+    public class ContentSubClass : ContentBaseClass
     {
-      SomeString = EasyIn;
-    }
+        public ContentSubClass()
+        {
+        }
 
-    public string SomeString { get; set; }
-  }
+        public ContentSubClass(string EasyIn)
+        {
+            SomeString = EasyIn;
+        }
+
+        public string SomeString { get; set; }
+    }
 }

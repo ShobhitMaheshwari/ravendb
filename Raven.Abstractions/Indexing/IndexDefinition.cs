@@ -7,381 +7,374 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Extensions;
+using Raven.Abstractions.Util;
+using Raven.Imports.Newtonsoft.Json;
 
 namespace Raven.Abstractions.Indexing
 {
-	/// <summary>
-	/// A definition of a RavenIndex
-	/// </summary>
-	public class IndexDefinition
-	{
-		/// <summary>
-		/// Initializes a new instance of the <see cref="IndexDefinition"/> class.
-		/// </summary>
-		public IndexDefinition()
-		{
-			Maps = new HashSet<string>();
-			Indexes = new Dictionary<string, FieldIndexing>();
-			Stores = new Dictionary<string, FieldStorage>();
-			Analyzers = new Dictionary<string, string>();
-			SortOptions = new Dictionary<string, SortOptions>();
-			Fields = new List<string>();
-			Suggestions = new Dictionary<string, SuggestionOptions>();
-			TermVectors = new Dictionary<string, FieldTermVector>();
-			SpatialIndexes = new Dictionary<string, SpatialOptions>();
-		}
+    /// <summary>
+    /// A definition of a RavenIndex
+    /// </summary>
+    public class IndexDefinition
+    {
+        /// <summary>
+        /// Index identifier (internal).
+        /// </summary>
+        public int IndexId { get; set; }
 
-		/// <summary>
-		/// Get or set the name of the index
-		/// </summary>
-		public string Name { get; set; }
+        /// <summary>
+        /// This is the means by which the outside world refers to this index definition
+        /// </summary>
+        public string Name { get; set; }
 
-		/// <summary>
-		/// Get or set the index lock mode
-		/// </summary>
-		public IndexLockMode LockMode { get; set; }
+        /// <summary>
+        /// Index lock mode:
+        /// <para>- Unlock - all index definition changes acceptable</para>
+        /// <para>- LockedIgnore - all index definition changes will be ignored, only log entry will be created</para>
+        /// <para>- LockedError - all index definition changes will raise exception</para>
+        /// <para>- SideBySide - all index definition changes will raise exception except when updated by a side by side index</para>
+        /// </summary>
+        public IndexLockMode LockMode { get; set; }
 
-		/// <summary>
-		/// Gets or sets the map function, if there is only one
-		/// </summary>
-		/// <remarks>
-		/// This property only exists for backward compatibility purposes
-		/// </remarks>
-		public string Map
-		{
-			get { return Maps.FirstOrDefault(); }
-			set
-			{
-				if (Maps.Count != 0)
-				{
-					Maps.Remove(Maps.First());
-				}
-				Maps.Add(value);
-			}
-		}
+        /// <summary>
+        /// Index version, used in index replication in order to identify if two indexes are indeed the same.
+        /// </summary>
+        public int? IndexVersion { get; set; }
 
-		/// <summary>
-		/// All the map functions for this index
-		/// </summary>
-		public HashSet<string> Maps { get; set; }
+        /// <summary>
+        /// Index map function, if there is only one
+        /// </summary>
+        /// <remarks>
+        /// This property only exists for backward compatibility purposes
+        /// </remarks>
+        public string Map
+        {
+            get { return Maps.FirstOrDefault(); }
+            set
+            {
+                if (Maps.Count != 0)
+                {
+                    Maps.Remove(Maps.First());
+                }
+                Maps.Add(value);
+            }
+        }
 
-		/// <summary>
-		/// Gets or sets the reduce function
-		/// </summary>
-		/// <value>The reduce.</value>
-		public string Reduce { get; set; }
+        /// <summary>
+        /// All the map functions for this index
+        /// </summary>
+        public HashSet<string> Maps
+        {
+            get { return maps ?? (maps = new HashSet<string>()); }
+            set { maps = value; }
+        }
 
-		/// <summary>
-		/// Gets or sets the translator function
-		/// </summary>
-		[Obsolete("Use Result Transformers instead.")]
-		public string TransformResults { get; set; }
+        /// <summary>
+        /// Index reduce function
+        /// </summary>
+        public string Reduce { get; set; }
 
-		/// <summary>
-		/// Gets a value indicating whether this instance is map reduce index definition
-		/// </summary>
-		/// <value>
-		/// 	<c>true</c> if this instance is map reduce; otherwise, <c>false</c>.
-		/// </value>
-		public bool IsMapReduce
-		{
-			get { return string.IsNullOrEmpty(Reduce) == false; }
-		}
+        /// <summary>
+        /// Gets a value indicating whether this instance is map reduce index definition
+        /// </summary>
+        /// <value>
+        /// 	<c>true</c> if this instance is map reduce; otherwise, <c>false</c>.
+        /// </value>
+        public bool IsMapReduce
+        {
+            get { return string.IsNullOrEmpty(Reduce) == false; }
+        }
 
-		public bool IsCompiled { get; set; }
+        /// <summary>
+        /// Internal use only.
+        /// </summary>
+        public bool IsCompiled { get; set; }
 
-		/// <summary>
-		/// Gets or sets the stores options
-		/// </summary>
-		/// <value>The stores.</value>
-		public IDictionary<string, FieldStorage> Stores { get; set; }
+        /// <summary>
+        /// Index field storage settings.
+        /// </summary>
+        public IDictionary<string, FieldStorage> Stores
+        {
+            get { return stores ?? (stores = new Dictionary<string, FieldStorage>()); }
+            set { stores = value; }
+        }
 
-		/// <summary>
-		/// Gets or sets the indexing options
-		/// </summary>
-		/// <value>The indexes.</value>
-		public IDictionary<string, FieldIndexing> Indexes { get; set; }
+        /// <summary>
+        /// Index field indexing settings.
+        /// </summary>
+        public IDictionary<string, FieldIndexing> Indexes
+        {
+            get { return indexes ?? (indexes = new Dictionary<string, FieldIndexing>()); }
+            set { indexes = value; }
+        }
 
-		/// <summary>
-		/// Gets or sets the sort options.
-		/// </summary>
-		/// <value>The sort options.</value>
-		public IDictionary<string, SortOptions> SortOptions { get; set; }
+        /// <summary>
+        /// Index field sorting settings.
+        /// </summary>
+        public IDictionary<string, SortOptions> SortOptions
+        {
+            get { return sortOptions ?? (sortOptions = new Dictionary<string, SortOptions>()); }
+            set { sortOptions = value; }
+        }
 
-		/// <summary>
-		/// Gets or sets the analyzers options
-		/// </summary>
-		/// <value>The analyzers.</value>
-		public IDictionary<string, string> Analyzers { get; set; }
+        /// <summary>
+        /// Index field analyzer settings.
+        /// </summary>
+        public IDictionary<string, string> Analyzers
+        {
+            get { return analyzers ?? (analyzers = new Dictionary<string, string>()); }
+            set { analyzers = value; }
+        }
 
-		/// <summary>
-		/// The fields that are queryable in the index
-		/// </summary>
-		public IList<string> Fields { get; set; }
+        /// <summary>
+        /// List of queryable fields in index.
+        /// </summary>
+        public IList<string> Fields
+        {
+            get { return fields ?? (fields = new List<string>()); }
+            set { fields = value; }
+        }
 
-		/// <summary>
-		/// Gets or sets the suggest options
-		/// </summary>
-		/// <value>The suggest options.</value>
-		public IDictionary<string, SuggestionOptions> Suggestions { get; set; }
+        /// <summary>
+        /// Index field suggestion settings.
+        /// </summary>
+        public IDictionary<string, SuggestionOptions> Suggestions
+        {
+            get { return suggestions ?? (suggestions = new Dictionary<string, SuggestionOptions>()); }
+            set { suggestions = value; }
+        }
 
-		/// <summary>
-		/// Gets or sets the term vectors options
-		/// </summary>
-		/// <value>The term vectors.</value>
-		public IDictionary<string, FieldTermVector> TermVectors { get; set; }
+        /// <summary>
+        /// Index field term vector settings.
+        /// </summary>
+        public IDictionary<string, FieldTermVector> TermVectors
+        {
+            get { return termVectors ?? (termVectors = new Dictionary<string, FieldTermVector>()); }
+            set { termVectors = value; }
+        }
 
-		/// <summary>
-		/// Gets or sets the spatial options
-		/// </summary>
-		/// <value>The spatial options.</value>
-		public IDictionary<string, SpatialOptions> SpatialIndexes { get; set; }
+        /// <summary>
+        /// Index field spatial settings.
+        /// </summary>
+        public IDictionary<string, SpatialOptions> SpatialIndexes
+        {
+            get { return spatialIndexes ?? (spatialIndexes = new Dictionary<string, SpatialOptions>()); }
+            set { spatialIndexes = value; }
+        }
 
         /// <summary>
         /// Internal map of field names to expressions generating them
         /// Only relevant for auto indexes and only used internally
         /// </summary>
-        public IDictionary<string, string> InternalFieldsMapping { get; set; }
+        public IDictionary<string, string> InternalFieldsMapping
+        {
+            get { return internalFieldsMapping ?? (internalFieldsMapping = new Dictionary<string, string>()); }
+            set { internalFieldsMapping = value; }
+        }
 
-		/// <summary>
-		/// Equals the specified other.
-		/// </summary>
-		/// <param name="other">The other.</param>
-		/// <returns></returns>
-		public bool Equals(IndexDefinition other)
-		{
-			if (ReferenceEquals(null, other))
-				return false;
-			if (ReferenceEquals(this, other))
-				return true;
-			return Maps.SequenceEqual(other.Maps) &&
-					Equals(other.Name, Name) &&
-					Equals(other.Reduce, Reduce) &&
-					Equals(other.TransformResults, TransformResults) &&
-					DictionaryEquals(other.Stores, Stores) &&
-					DictionaryEquals(other.Indexes, Indexes) &&
-					DictionaryEquals(other.Analyzers, Analyzers) &&
-					DictionaryEquals(other.SortOptions, SortOptions) &&
-					DictionaryEquals(other.Suggestions, Suggestions) &&
-					DictionaryEquals(other.TermVectors, TermVectors) &&
-					DictionaryEquals(other.SpatialIndexes, SpatialIndexes);
-		}
+        /// <summary>
+        /// Index specific setting that limits the number of map outputs that an index is allowed to create for a one source document. If a map operation applied to
+        /// the one document produces more outputs than this number then an index definition will be considered as a suspicious, the indexing of this document 
+        /// will be skipped and the appropriate error message will be added to the indexing errors.
+        /// <para>Default value: null means that the global value from Raven configuration will be taken to detect if number of outputs was exceeded.</para>
+        /// </summary>
+        public int? MaxIndexOutputsPerDocument { get; set; }
 
-		private static bool DictionaryEquals<TKey, TValue>(IDictionary<TKey, TValue> x, IDictionary<TKey, TValue> y)
-		{
-			if (x.Count != y.Count)
-				return false;
-			foreach (var v in x)
-			{
-				TValue value;
-				if (y.TryGetValue(v.Key, out value) == false)
-					return false;
-				if (Equals(value, v.Value) == false)
-					return false;
-			}
-			return true;
-		}
+        /// <summary>
+        /// Equals the specified other.
+        /// </summary>
+        /// <param name="other">The other.</param>
+        /// <param name="compareIndexIds">allow caller to choose whether to include the index Id in the comparison</param>
+        /// <returns></returns>
+        public bool Equals(IndexDefinition other, bool compareIndexIds = true, bool ignoreFormatting = false, bool ignoreMaxIndexOutput = false)
+        {
+            if (ReferenceEquals(null, other))
+                return false;
 
-		private static int DictionaryHashCode<TKey, TValue>(IEnumerable<KeyValuePair<TKey, TValue>> x)
-		{
-			int result = 0;
-			foreach (var kvp in x)
-			{
-				result = (result * 397) ^ kvp.Key.GetHashCode();
-				result = (result * 397) ^ (!Equals(kvp.Value, default(TValue)) ? kvp.Value.GetHashCode() : 0);
-			}
-			return result;
-		}
+            if (ReferenceEquals(this, other))
+                return true;
 
-		/// <summary>
-		/// Determines whether the specified <see cref="System.Object"/> is equal to this instance.
-		/// </summary>
-		/// <param name="obj">The <see cref="System.Object"/> to compare with this instance.</param>
-		/// <returns>
-		/// 	<c>true</c> if the specified <see cref="System.Object"/> is equal to this instance; otherwise, <c>false</c>.
-		/// </returns>
-		public override bool Equals(object obj)
-		{
-			if (ReferenceEquals(null, obj))
-				return false;
-			if (ReferenceEquals(this, obj))
-				return true;
-			return Equals(obj as IndexDefinition);
-		}
+            if (compareIndexIds && !Equals(other.IndexId, IndexId))
+                return false;
 
-		private byte[] cachedHashCodeAsBytes;
+            bool mapsReduceEquals;
+            if (ignoreFormatting)
+            {
+                var comparer = new IndexPrettyPrinterEqualityComparer();
+                mapsReduceEquals = Maps.SequenceEqual(other.Maps, comparer) && comparer.Equals(Reduce, other.Reduce);
+            }
+            else
+            {
+                mapsReduceEquals = Maps.SequenceEqual(other.Maps) && Equals(other.Reduce, Reduce);
+            }
 
-		/// <summary>
-		/// Provide a cached version of the index hash code, which is used when generating
-		/// the index etag. 
-		/// It isn't really useful for anything else, in particular, we cache that because
-		/// we want to avoid calculating the cost of doing this over and over again on each 
-		/// query.
-		/// </summary>
-		public byte[] GetIndexHash()
-		{
-			if (cachedHashCodeAsBytes != null)
-				return cachedHashCodeAsBytes;
+            return mapsReduceEquals &&
+                    (ignoreMaxIndexOutput || other.MaxIndexOutputsPerDocument == MaxIndexOutputsPerDocument) &&
+                    DictionaryExtensions.ContentEquals(other.Stores, Stores) &&
+                    DictionaryExtensions.ContentEquals(other.Indexes, Indexes) &&
+                    DictionaryExtensions.ContentEquals(other.Analyzers, Analyzers) &&
+                    DictionaryExtensions.ContentEquals(other.SortOptions, SortOptions) &&
+                    DictionaryExtensions.ContentEquals(other.Suggestions, Suggestions) &&
+                    DictionaryExtensions.ContentEquals(other.TermVectors, TermVectors) &&
+                    DictionaryExtensions.ContentEquals(other.SpatialIndexes, SpatialIndexes);
+        }
 
-			cachedHashCodeAsBytes = BitConverter.GetBytes(GetHashCode());
-			return cachedHashCodeAsBytes;
-		}
+        private static int DictionaryHashCode<TKey, TValue>(IEnumerable<KeyValuePair<TKey, TValue>> x)
+        {
+            int result = 0;
+            foreach (var kvp in x)
+            {
+                result = (result * 397) ^ kvp.Key.GetHashCode();
+                result = (result * 397) ^ (!Equals(kvp.Value, default(TValue)) ? kvp.Value.GetHashCode() : 0);
+            }
+            return result;
+        }
 
-		/// <summary>
-		/// Returns a hash code for this instance.
-		/// </summary>
-		/// <returns>
-		/// A hash code for this instance, suitable for use in hashing algorithms and data structures like a hash table. 
-		/// </returns>
-		public override int GetHashCode()
-		{
-			unchecked
-			{
-				int result = Maps.Where(x => x != null).Aggregate(0, (acc, val) => acc * 397 ^ val.GetHashCode());
-				result = (result * 397) ^ Maps.Count;
-				result = (result * 397) ^ (Reduce != null ? Reduce.GetHashCode() : 0);
-				result = (result * 397) ^ (TransformResults != null ? TransformResults.GetHashCode() : 0);
-				result = (result * 397) ^ DictionaryHashCode(Stores);
-				result = (result * 397) ^ DictionaryHashCode(Indexes);
-				result = (result * 397) ^ DictionaryHashCode(Analyzers);
-				result = (result * 397) ^ DictionaryHashCode(SortOptions);
-				result = (result * 397) ^ DictionaryHashCode(Suggestions);
-				result = (result * 397) ^ DictionaryHashCode(TermVectors);
-				result = (result * 397) ^ DictionaryHashCode(SpatialIndexes);
-				return result;
-			}
-		}
+        /// <summary>
+        /// Determines whether the specified <see cref="System.Object"/> is equal to this instance.
+        /// </summary>
+        /// <param name="obj">The <see cref="System.Object"/> to compare with this instance.</param>
+        /// <returns>
+        /// 	<c>true</c> if the specified <see cref="System.Object"/> is equal to this instance; otherwise, <c>false</c>.
+        /// </returns>
+        public override bool Equals(object obj)
+        {
+            if (ReferenceEquals(null, obj))
+                return false;
+            if (ReferenceEquals(this, obj))
+                return true;
+            return Equals(obj as IndexDefinition);
+        }
 
-		public string Type
-		{
-			get
-			{
-				var name = Name ?? string.Empty;
-				if (name.StartsWith("Auto/", StringComparison.OrdinalIgnoreCase))
-					return "Auto";
-				if (IsCompiled)
-					return "Compiled";
-				if (IsMapReduce)
-					return "MapReduce";
-				return "Map";
-			}
-		}
+        [JsonIgnore]
+        private byte[] cachedHashCodeAsBytes;
+        [JsonIgnore]
+        private HashSet<string> maps;
+        [JsonIgnore]
+        private IDictionary<string, FieldStorage> stores;
+        [JsonIgnore]
+        private IDictionary<string, FieldIndexing> indexes;
+        [JsonIgnore]
+        private IDictionary<string, SortOptions> sortOptions;
+        [JsonIgnore]
+        private IDictionary<string, string> analyzers;
+        [JsonIgnore]
+        private IList<string> fields;
+        [JsonIgnore]
+        private IDictionary<string, SuggestionOptions> suggestions;
+        [JsonIgnore]
+        private IDictionary<string, FieldTermVector> termVectors;
+        [JsonIgnore]
+        private IDictionary<string, SpatialOptions> spatialIndexes;
+        [JsonIgnore]
+        private IDictionary<string, string> internalFieldsMapping;
 
-		/// <summary>
-		/// Prevent index from being kept in memory. Default: false
-		/// </summary>
-		public bool DisableInMemoryIndexing { get; set; }
+        /// <summary>
+        /// Provide a cached version of the index hash code, which is used when generating
+        /// the index etag. 
+        /// It isn't really useful for anything else, in particular, we cache that because
+        /// we want to avoid calculating the cost of doing this over and over again on each 
+        /// query.
+        /// </summary>
+        public byte[] GetIndexHash()
+        {
+            if (cachedHashCodeAsBytes != null)
+                return cachedHashCodeAsBytes;
 
-		/// <summary>
-		/// Remove the default values that we don't actually need
-		/// </summary>
-		public void RemoveDefaultValues()
-		{
-			const FieldStorage defaultStorage = FieldStorage.No;
-			foreach (var toRemove in Stores.Where(x => x.Value == defaultStorage).ToArray())
-			{
-				Stores.Remove(toRemove);
-			}
-			foreach (var toRemove in Indexes.Where(x => x.Value == FieldIndexing.Default).ToArray())
-			{
-				Indexes.Remove(toRemove);
-			}
-			foreach (var toRemove in SortOptions.Where(x => x.Value == Indexing.SortOptions.None).ToArray())
-			{
-				SortOptions.Remove(toRemove);
-			}
-			foreach (var toRemove in Analyzers.Where(x => string.IsNullOrEmpty(x.Value)).ToArray())
-			{
-				Analyzers.Remove(toRemove);
-			}
-			foreach (var toRemove in Suggestions.Where(x => x.Value.Distance == StringDistanceTypes.None).ToArray())
-			{
-				Suggestions.Remove(toRemove);
-			}
-			foreach (var toRemove in TermVectors.Where(x => x.Value == FieldTermVector.No).ToArray())
-			{
-				TermVectors.Remove(toRemove);
-			}
-		}
+            cachedHashCodeAsBytes = BitConverter.GetBytes(GetHashCode());
+            return cachedHashCodeAsBytes;
+        }
 
-		public override string ToString()
-		{
-			return Name ?? Map;
-		}
+        /// <summary>
+        /// Returns a hash code for this instance.
+        /// </summary>
+        /// <returns>
+        /// A hash code for this instance, suitable for use in hashing algorithms and data structures like a hash table. 
+        /// </returns>
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int result = Maps.Where(x => x != null).Aggregate(0, (acc, val) => acc * 397 ^ val.GetHashCode());
+                result = (result * 397) ^ Maps.Count;
+                result = (result * 397) ^ (Reduce != null ? Reduce.GetHashCode() : 0);
+                result = (result * 397) ^ DictionaryHashCode(Stores);
+                result = (result * 397) ^ DictionaryHashCode(Indexes);
+                result = (result * 397) ^ DictionaryHashCode(Analyzers);
+                result = (result * 397) ^ DictionaryHashCode(SortOptions);
+                result = (result * 397) ^ DictionaryHashCode(Suggestions);
+                result = (result * 397) ^ DictionaryHashCode(TermVectors);
+                result = (result * 397) ^ DictionaryHashCode(SpatialIndexes);
+                return result;
+            }
+        }
 
-		public IndexDefinition Clone()
-		{
-			var indexDefinition = new IndexDefinition
-			{
-				Name = Name,
-				Reduce = Reduce,
-				TransformResults = TransformResults,
-				cachedHashCodeAsBytes = cachedHashCodeAsBytes
-			};
+        public string Type
+        {
+            get
+            {
+                var name = Name ?? string.Empty;
+                if (name.StartsWith("Auto/", StringComparison.OrdinalIgnoreCase))
+                    return "Auto";
+                if (IsCompiled)
+                    return "Compiled";
+                if (IsMapReduce)
+                    return "MapReduce";
+                return "Map";
+            }
+        }
 
-			if (Maps != null)
-				indexDefinition.Maps = new HashSet<string>(Maps);
-			if (Analyzers != null)
-				indexDefinition.Analyzers = new Dictionary<string, string>(Analyzers);
-			if (Fields != null)
-				indexDefinition.Fields = new List<string>(Fields);
-			if (Indexes != null)
-				indexDefinition.Indexes = new Dictionary<string, FieldIndexing>(Indexes);
-			if (SortOptions != null)
-				indexDefinition.SortOptions = new Dictionary<string, SortOptions>(SortOptions);
-			if (Stores != null)
-				indexDefinition.Stores = new Dictionary<string, FieldStorage>(Stores);
-			if (Suggestions != null)
-				indexDefinition.Suggestions = new Dictionary<string, SuggestionOptions>(Suggestions);
-			if (TermVectors != null)
-				indexDefinition.TermVectors = new Dictionary<string, FieldTermVector>(TermVectors);
-			if (SpatialIndexes != null)
-				indexDefinition.SpatialIndexes = new Dictionary<string, SpatialOptions>(SpatialIndexes);
-			return indexDefinition;
-		}
-	}
+        /// <summary>
+        /// Prevent index from being kept in memory. Default: false
+        /// </summary>
+        public bool DisableInMemoryIndexing { get; set; }
 
-	public enum IndexLockMode
-	{
-		Unlock,
-		LockedIgnore,
-		LockedError
-	}
+        /// <summary>
+        /// Whatever this is a temporary test only index
+        /// </summary>
+        public bool IsTestIndex { get; set; }
 
-	public class TransformerDefinition
-	{
-		/// <summary>
-		/// Gets or sets the translator function
-		/// </summary>
-		public string TransformResults { get; set; }
-		public string Name { get; set; }
+        /// <summary>
+        /// Whatever this is a side by side index
+        /// </summary>
+        public bool IsSideBySideIndex { get; set; }
 
-		public bool Equals(TransformerDefinition other)
-		{
-			return string.Equals(TransformResults, other.TransformResults);
-		}
+        /// <summary>
+        /// Remove the default values that we don't actually need
+        /// </summary>
+        public void RemoveDefaultValues()
+        {
+            const FieldStorage defaultStorage = FieldStorage.No;
+            foreach (var toRemove in Stores.Where(x => x.Value == defaultStorage).ToArray())
+            {
+                Stores.Remove(toRemove);
+            }
+            foreach (var toRemove in Indexes.Where(x => x.Value == FieldIndexing.Default).ToArray())
+            {
+                Indexes.Remove(toRemove);
+            }
+            foreach (var toRemove in SortOptions.Where(x => x.Value == Indexing.SortOptions.None).ToArray())
+            {
+                SortOptions.Remove(toRemove);
+            }
+            foreach (var toRemove in Analyzers.Where(x => string.IsNullOrEmpty(x.Value)).ToArray())
+            {
+                Analyzers.Remove(toRemove);
+            }
+            foreach (var toRemove in Suggestions.Where(x => x.Value.Distance == StringDistanceTypes.None).ToArray())
+            {
+                Suggestions.Remove(toRemove);
+            }
+            foreach (var toRemove in TermVectors.Where(x => x.Value == FieldTermVector.No).ToArray())
+            {
+                TermVectors.Remove(toRemove);
+            }
+        }
 
-		public override bool Equals(object obj)
-		{
-			if (ReferenceEquals(null, obj)) return false;
-			if (ReferenceEquals(this, obj)) return true;
-			if (obj.GetType() != GetType()) return false;
-			return Equals((TransformerDefinition) obj);
-		}
-
-		public override int GetHashCode()
-		{
-			return (TransformResults != null ? TransformResults.GetHashCode() : 0);
-		}
-
-		public TransformerDefinition Clone()
-		{
-			return (TransformerDefinition) MemberwiseClone();
-		}
-
-		public override string ToString()
-		{
-			return Name ?? TransformResults;
-		}
-	}
+        public override string ToString()
+        {
+            return Name ?? Map;
+        }
+    }
 }

@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -25,24 +25,25 @@
 
 namespace Raven.Imports.Newtonsoft.Json.Utilities
 {
-  internal class EnumValue<T> where T : struct
-  {
-    private readonly string _name;
-    private readonly T _value;
+    internal class EnumValue<T> where T : struct
+    {
+        private readonly string _name;
+        private readonly T _value;
 
-    public string Name
-    {
-      get { return _name; }
-    }
-    public T Value
-    {
-      get { return _value; }
-    }
+        public string Name
+        {
+            get { return _name; }
+        }
 
-    public EnumValue(string name, T value)
-    {
-      _name = name;
-      _value = value;
+        public T Value
+        {
+            get { return _value; }
+        }
+
+        public EnumValue(string name, T value)
+        {
+            _name = name;
+            _value = value;
+        }
     }
-  }
 }

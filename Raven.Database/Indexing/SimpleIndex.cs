@@ -15,19 +15,22 @@ using Lucene.Net.Index;
 using Lucene.Net.Store;
 using Raven.Abstractions;
 using Raven.Abstractions.Data;
+using Raven.Abstractions.Exceptions;
 using Raven.Abstractions.Indexing;
 using Raven.Abstractions.Linq;
 using Raven.Abstractions.Logging;
 using Raven.Database.Extensions;
 using Raven.Database.Linq;
 using Raven.Database.Storage;
+using Raven.Database.Util;
+using Spatial4n.Core.Exceptions;
 
 namespace Raven.Database.Indexing
 {
-    public class SimpleIndex : Index
+    internal class SimpleIndex : Index
     {
-        public SimpleIndex(Directory directory, string name, IndexDefinition indexDefinition, AbstractViewGenerator viewGenerator, WorkContext context)
-            : base(directory, name, indexDefinition, viewGenerator, context)
+        public SimpleIndex(Directory directory, int id, IndexDefinition indexDefinition, AbstractViewGenerator viewGenerator, WorkContext context)
+            : base(directory, id, indexDefinition, viewGenerator, context)
         {
         }
 
@@ -38,24 +41,45 @@ namespace Raven.Database.Indexing
 
         public DateTime LastCommitPointStoreTime { get; private set; }
 
-        public override void IndexDocuments(AbstractViewGenerator viewGenerator, IndexingBatch batch, IStorageActionsAccessor actions, DateTime minimumTimestamp)
+        public override IndexingPerformanceStats IndexDocuments(AbstractViewGenerator viewGenerator, IndexingBatch batch, IStorageActionsAccessor actions, DateTime minimumTimestamp, CancellationToken token)
         {
+            token.ThrowIfCancellationRequested();
+
             var count = 0;
             var sourceCount = 0;
-            var sw = Stopwatch.StartNew();
-            var start = SystemTime.UtcNow;
+            var writeToIndexStats = new List<PerformanceStats>();
+
+            IndexingPerformanceStats performance = null;
+            var performanceStats = new List<BasePerformanceStats>();
+
+            var storageCommitDuration = new Stopwatch();
+
+            actions.BeforeStorageCommit += storageCommitDuration.Start;
+
+            actions.AfterStorageCommit += () =>
+            {
+                storageCommitDuration.Stop();
+
+                performanceStats.Add(PerformanceStats.From(IndexingOperation.StorageCommit, storageCommitDuration.ElapsedMilliseconds));
+            };
+
             Write((indexWriter, analyzer, stats) =>
             {
                 var processedKeys = new HashSet<string>();
-                var batchers = context.IndexUpdateTriggers.Select(x => x.CreateBatcher(name))
+                var batchers = context.IndexUpdateTriggers.Select(x => x.CreateBatcher(indexId))
                     .Where(x => x != null)
                     .ToList();
+
                 try
                 {
-                    RecordCurrentBatch("Current", batch.Docs.Count);
+                    performance = RecordCurrentBatch("Current", "Index", batch.Docs.Count);
+
+                    var deleteExistingDocumentsDuration = new Stopwatch();
                     var docIdTerm = new Term(Constants.DocumentIdFieldName);
                     var documentsWrapped = batch.Docs.Select((doc, i) =>
                     {
+                        token.ThrowIfCancellationRequested();
+
                         Interlocked.Increment(ref sourceCount);
                         if (doc.__document_id == null)
                             throw new ArgumentException(
@@ -64,54 +88,103 @@ namespace Raven.Database.Indexing
                         string documentId = doc.__document_id.ToString();
                         if (processedKeys.Add(documentId) == false)
                             return doc;
-                        batchers.ApplyAndIgnoreAllErrors(
-                            exception =>
-                            {
-                                logIndexing.WarnException(
-                                    string.Format("Error when executed OnIndexEntryDeleted trigger for index '{0}', key: '{1}'",
-                                                  name, documentId),
-                                    exception);
-                                context.AddError(name,
-                                                 documentId,
-                                                 exception.Message,
-                                                 "OnIndexEntryDeleted Trigger"
-                                    );
-                            },
-                            trigger => trigger.OnIndexEntryDeleted(documentId));
+
+                        InvokeOnIndexEntryDeletedOnAllBatchers(batchers, docIdTerm.CreateTerm(documentId.ToLowerInvariant()));
+
                         if (batch.SkipDeleteFromIndex[i] == false ||
                             context.ShouldRemoveFromIndex(documentId)) // maybe it is recently deleted?
-                            indexWriter.DeleteDocuments(docIdTerm.CreateTerm(documentId.ToLowerInvariant()));
+                        {
+                            using (StopwatchScope.For(deleteExistingDocumentsDuration))
+                            {
+                                indexWriter.DeleteDocuments(docIdTerm.CreateTerm(documentId.ToLowerInvariant()));
+                            }
+                        }
 
                         return doc;
                     })
-                        .Where(x => x is FilteredDocument == false)
-                        .ToList();
+                    .Where(x => x is FilteredDocument == false)
+                    .ToList();
+
+                    performanceStats.Add(new PerformanceStats
+                    {
+                        Name = IndexingOperation.Lucene_DeleteExistingDocument,
+                        DurationMs = deleteExistingDocumentsDuration.ElapsedMilliseconds
+                    });
 
                     var allReferencedDocs = new ConcurrentQueue<IDictionary<string, HashSet<string>>>();
-					var missingReferencedDocs = new ConcurrentQueue<IDictionary<string, HashSet<string>>>();
+                    var allReferenceEtags = new ConcurrentQueue<IDictionary<string, Etag>>();
+
+                    var parallelOperations = new ConcurrentQueue<ParallelBatchStats>();
+
+                    var parallelProcessingStart = SystemTime.UtcNow;
 
                     BackgroundTaskExecuter.Instance.ExecuteAllBuffered(context, documentsWrapped, (partition) =>
                     {
-						var anonymousObjectToLuceneDocumentConverter = new AnonymousObjectToLuceneDocumentConverter(context.Database, indexDefinition, viewGenerator);
+                        token.ThrowIfCancellationRequested();
+                        var parallelStats = new ParallelBatchStats
+                        {
+                            StartDelay = (long)(SystemTime.UtcNow - parallelProcessingStart).TotalMilliseconds
+                        };
+
+                        var anonymousObjectToLuceneDocumentConverter = new AnonymousObjectToLuceneDocumentConverter(context.Database, indexDefinition, viewGenerator, logIndexing);
                         var luceneDoc = new Document();
                         var documentIdField = new Field(Constants.DocumentIdFieldName, "dummy", Field.Store.YES,
                                                         Field.Index.NOT_ANALYZED_NO_NORMS);
 
-                        using (CurrentIndexingScope.Current = new CurrentIndexingScope(LoadDocument, (references,
-                                                                                                      missing) =>
+                        using (CurrentIndexingScope.Current = new CurrentIndexingScope(context.Database, PublicName))
                         {
-                            allReferencedDocs.Enqueue(references);
-                            missingReferencedDocs.Enqueue(missing);
-                        } ))
-                        {
-                            foreach (var doc in RobustEnumerationIndex(partition, viewGenerator.MapDefinitions, stats))
-                            {
-                                float boost;
-                                var indexingResult = GetIndexingResult(doc, anonymousObjectToLuceneDocumentConverter, out boost);
+                            string currentDocId = null;
+                            int outputPerDocId = 0;
+                            Action<Exception, object> onErrorFunc;
+                            bool skipDocument = false;
 
-                                if (indexingResult.NewDocId != null && indexingResult.ShouldSkip == false)
+                            var linqExecutionDuration = new Stopwatch();
+                            var addDocumentDutation = new Stopwatch();
+                            var convertToLuceneDocumentDuration = new Stopwatch();
+
+                            foreach (var doc in RobustEnumerationIndex(partition, viewGenerator.MapDefinitions, stats, out onErrorFunc, linqExecutionDuration))
+                            {
+                                token.ThrowIfCancellationRequested();
+
+                                float boost;
+                                IndexingResult indexingResult;
+                                using (StopwatchScope.For(convertToLuceneDocumentDuration))
                                 {
-                                    Interlocked.Increment(ref count);
+                                    try
+                                    {
+
+                                        indexingResult = GetIndexingResult(doc, anonymousObjectToLuceneDocumentConverter, out boost);
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        onErrorFunc(e, doc);
+                                        continue;
+                                    }
+                                }
+
+                                // ReSharper disable once RedundantBoolCompare --> code clarity
+                                if (indexingResult.NewDocId == null || indexingResult.ShouldSkip != false)
+                                {
+                                    continue;
+                                }
+                                if (currentDocId != indexingResult.NewDocId)
+                                {
+                                    currentDocId = indexingResult.NewDocId;
+                                    outputPerDocId = 0;
+                                    skipDocument = false;
+                                }
+                                if (skipDocument)
+                                    continue;
+                                outputPerDocId++;
+                                if (EnsureValidNumberOfOutputsForDocument(currentDocId, outputPerDocId) == false)
+                                {
+                                    skipDocument = true;
+                                    continue;
+                                }
+                                Interlocked.Increment(ref count);
+
+                                using (StopwatchScope.For(convertToLuceneDocumentDuration))
+                                {
                                     luceneDoc.GetFields().Clear();
                                     luceneDoc.Boost = boost;
                                     documentIdField.SetValue(indexingResult.NewDocId.ToLowerInvariant());
@@ -120,37 +193,67 @@ namespace Raven.Database.Indexing
                                     {
                                         luceneDoc.Add(field);
                                     }
-                                    batchers.ApplyAndIgnoreAllErrors(
-                                        exception =>
-                                        {
-                                            logIndexing.WarnException(
-                                                string.Format("Error when executed OnIndexEntryCreated trigger for index '{0}', key: '{1}'",
-                                                              name, indexingResult.NewDocId),
-                                                exception);
-                                            context.AddError(name,
-                                                             indexingResult.NewDocId,
-                                                             exception.Message,
-                                                             "OnIndexEntryCreated Trigger"
-                                                );
-                                        },
-                                        trigger => trigger.OnIndexEntryCreated(indexingResult.NewDocId, luceneDoc));
-                                    LogIndexedDocument(indexingResult.NewDocId, luceneDoc);
+                                }
+
+                                batchers.ApplyAndIgnoreAllErrors(
+                                    exception =>
+                                    {
+                                        logIndexing.WarnException(
+                                        string.Format(
+                                            "Error when executed OnIndexEntryCreated trigger for index '{0}', key: '{1}'",
+                                            PublicName, indexingResult.NewDocId),
+                                            exception);
+                                        context.AddError(
+                                            indexId,
+                                            PublicName,
+                                            indexingResult.NewDocId,
+                                            exception,
+                                            "OnIndexEntryCreated Trigger");
+                                    },
+                                    trigger => trigger.OnIndexEntryCreated(indexingResult.NewDocId, luceneDoc));
+                                LogIndexedDocument(indexingResult.NewDocId, luceneDoc);
+
+                                using (StopwatchScope.For(addDocumentDutation))
+                                {
                                     AddDocumentToIndex(indexWriter, luceneDoc, analyzer);
                                 }
 
                                 Interlocked.Increment(ref stats.IndexingSuccesses);
                             }
+                            allReferenceEtags.Enqueue(CurrentIndexingScope.Current.ReferencesEtags);
+                            allReferencedDocs.Enqueue(CurrentIndexingScope.Current.ReferencedDocuments);
+
+                            parallelStats.Operations.Add(PerformanceStats.From(IndexingOperation.LoadDocument, CurrentIndexingScope.Current.LoadDocumentDuration.ElapsedMilliseconds));
+                            parallelStats.Operations.Add(PerformanceStats.From(IndexingOperation.Linq_MapExecution, linqExecutionDuration.ElapsedMilliseconds));
+                            parallelStats.Operations.Add(PerformanceStats.From(IndexingOperation.Lucene_ConvertToLuceneDocument, convertToLuceneDocumentDuration.ElapsedMilliseconds));
+                            parallelStats.Operations.Add(PerformanceStats.From(IndexingOperation.Lucene_AddDocument, addDocumentDutation.ElapsedMilliseconds));
+                            parallelOperations.Enqueue(parallelStats);
+
+                            parallelOperations.Enqueue(parallelStats);
                         }
                     });
-                    UpdateDocumentReferences(actions, allReferencedDocs, missingReferencedDocs);
+
+                    performanceStats.Add(new ParallelPerformanceStats
+                    {
+                        NumberOfThreads = parallelOperations.Count,
+                        DurationMs = (long)(SystemTime.UtcNow - parallelProcessingStart).TotalMilliseconds,
+                        BatchedOperations = parallelOperations.ToList()
+                    });
+
+                    var updateDocumentReferencesDuration = new Stopwatch();
+                    using (StopwatchScope.For(updateDocumentReferencesDuration))
+                    {
+                        UpdateDocumentReferences(actions, allReferencedDocs, allReferenceEtags);
+                    }
+                    performanceStats.Add(PerformanceStats.From(IndexingOperation.UpdateDocumentReferences, updateDocumentReferencesDuration.ElapsedMilliseconds));
                 }
                 catch (Exception e)
                 {
                     batchers.ApplyAndIgnoreAllErrors(
                         ex =>
                         {
-                            logIndexing.WarnException("Failed to notify index update trigger batcher about an error", ex);
-                            context.AddError(name, null, ex.Message, "AnErrorOccured Trigger");
+                            logIndexing.WarnException("Failed to notify index update trigger batcher about an error in " + PublicName, ex);
+                            context.AddError(indexId, PublicName, null, ex, "AnErrorOccured Trigger");
                         },
                         x => x.AnErrorOccured(e));
                     throw;
@@ -160,29 +263,24 @@ namespace Raven.Database.Indexing
                     batchers.ApplyAndIgnoreAllErrors(
                         e =>
                         {
-                            logIndexing.WarnException("Failed to dispose on index update trigger", e);
-                            context.AddError(name, null, e.Message, "Dispose Trigger");
+                            logIndexing.WarnException("Failed to dispose on index update trigger in " + PublicName, e);
+                            context.AddError(indexId, PublicName, null, e, "Dispose Trigger");
                         },
                         x => x.Dispose());
-                    BatchCompleted("Current");
                 }
-                return new IndexedItemsInfo
+                return new IndexedItemsInfo(batch.HighestEtagBeforeFiltering)
                 {
-                    ChangedDocs = sourceCount,
-                    HighestETag = batch.HighestEtagInBatch
+                    ChangedDocs = sourceCount
                 };
-            });
+            }, writeToIndexStats);
 
-            AddindexingPerformanceStat(new IndexingPerformanceStats
-            {
-                OutputCount = count,
-                ItemsCount = sourceCount,
-                InputCount = batch.Docs.Count,
-                Duration = sw.Elapsed,
-                Operation = "Index",
-                Started = start
-            });
-            logIndexing.Debug("Indexed {0} documents for {1}", count, name);
+            performanceStats.AddRange(writeToIndexStats);
+
+            performance.OnCompleted = () => BatchCompleted("Current", "Index", sourceCount, count, performanceStats);
+
+            logIndexing.Debug("Indexed {0} documents for {1}", count, PublicName);
+
+            return performance;
         }
 
         protected override bool IsUpToDateEnoughToWriteToDisk(Etag highestETag)
@@ -195,55 +293,35 @@ namespace Raven.Database.Indexing
             return upToDate;
         }
 
-        protected override void HandleCommitPoints(IndexedItemsInfo itemsInfo)
+        protected override void HandleCommitPoints(IndexedItemsInfo itemsInfo, IndexSegmentsInfo segmentsInfo)
         {
-            if (ShouldStoreCommitPoint() && itemsInfo.HighestETag != null)
+            if (ShouldStoreCommitPoint(itemsInfo) && itemsInfo.HighestETag != null)
             {
-                context.IndexStorage.StoreCommitPoint(name, new IndexCommitPoint
+                context.IndexStorage.StoreCommitPoint(indexId.ToString(), new IndexCommitPoint
                 {
                     HighestCommitedETag = itemsInfo.HighestETag,
                     TimeStamp = LastIndexTime,
-                    SegmentsInfo = GetCurrentSegmentsInfo()
+                    SegmentsInfo = segmentsInfo ?? IndexStorage.GetCurrentSegmentsInfo(indexDefinition.Name, directory)
                 });
 
                 LastCommitPointStoreTime = SystemTime.UtcNow;
             }
             else if (itemsInfo.DeletedKeys != null && directory is RAMDirectory == false)
             {
-                context.IndexStorage.AddDeletedKeysToCommitPoints(name, itemsInfo.DeletedKeys);
+                context.IndexStorage.AddDeletedKeysToCommitPoints(indexDefinition, itemsInfo.DeletedKeys);
             }
         }
 
-        private IndexSegmentsInfo GetCurrentSegmentsInfo()
+        private bool ShouldStoreCommitPoint(IndexedItemsInfo itemsInfo)
         {
-            var segmentInfos = new SegmentInfos();
-            var result = new IndexSegmentsInfo();
+            if (itemsInfo.DisableCommitPoint)
+                return false;
 
-            try
-            {
-                segmentInfos.Read(directory);
-
-                result.Generation = segmentInfos.Generation;
-                result.SegmentsFileName = segmentInfos.GetCurrentSegmentFileName();
-                result.ReferencedFiles = segmentInfos.Files(directory, false);
-            }
-            catch (CorruptIndexException ex)
-            {
-                logIndexing.WarnException(string.Format("Could not read segment information for an index '{0}'", name), ex);
-
-                result.IsIndexCorrupted = true;
-            }
-
-            return result;
-        }
-
-        private bool ShouldStoreCommitPoint()
-        {
             if (directory is RAMDirectory) // no point in trying to store commits for ram index
                 return false;
             // no often than specified indexing interval
             return (LastIndexTime - PreviousIndexTime > context.Configuration.MinIndexingTimeIntervalToStoreCommitPoint ||
-                // at least once for specified time interval
+                    // at least once for specified time interval
                     LastIndexTime - LastCommitPointStoreTime > context.Configuration.MaxIndexCommitPointStoreTimeInterval);
         }
 
@@ -259,8 +337,12 @@ namespace Raven.Database.Indexing
             }
 
             IndexingResult indexingResult;
-            if (doc is DynamicJsonObject)
-                indexingResult = ExtractIndexDataFromDocument(anonymousObjectToLuceneDocumentConverter, (DynamicJsonObject)doc);
+
+            var docAsDynamicJsonObject = doc as DynamicJsonObject;
+
+            // ReSharper disable once ConvertIfStatementToConditionalTernaryExpression
+            if (docAsDynamicJsonObject != null)
+                indexingResult = ExtractIndexDataFromDocument(anonymousObjectToLuceneDocumentConverter, docAsDynamicJsonObject);
             else
                 indexingResult = ExtractIndexDataFromDocument(anonymousObjectToLuceneDocumentConverter, doc);
 
@@ -284,71 +366,88 @@ namespace Raven.Database.Indexing
 
         private IndexingResult ExtractIndexDataFromDocument(AnonymousObjectToLuceneDocumentConverter anonymousObjectToLuceneDocumentConverter, DynamicJsonObject dynamicJsonObject)
         {
-            var newDocId = dynamicJsonObject.GetRootParentOrSelf().GetDocumentId();
+            var newDocIdAsObject = dynamicJsonObject.GetRootParentOrSelf().GetDocumentId();
+            var newDocId = newDocIdAsObject is DynamicNullObject ? null : (string)newDocIdAsObject;
+            List<AbstractField> abstractFields;
+
+            try
+            {
+                abstractFields = anonymousObjectToLuceneDocumentConverter.Index(((IDynamicJsonObject)dynamicJsonObject).Inner, Field.Store.NO).ToList();
+            }
+            catch (InvalidShapeException e)
+            {
+                throw new InvalidSpatialShapException(e, newDocId);
+            }
+
             return new IndexingResult
             {
-                Fields = anonymousObjectToLuceneDocumentConverter.Index(((IDynamicJsonObject)dynamicJsonObject).Inner, Field.Store.NO).ToList(),
-                NewDocId = newDocId is DynamicNullObject ? null : (string)newDocId,
+                Fields = abstractFields,
+                NewDocId = newDocId,
                 ShouldSkip = false
             };
         }
 
-        private readonly ConcurrentDictionary<Type, PropertyDescriptorCollection> propertyDescriptorCache = new ConcurrentDictionary<Type, PropertyDescriptorCollection>();
+        private readonly ConcurrentDictionary<Type, PropertyAccessor> propertyAccessorCache = new ConcurrentDictionary<Type, PropertyAccessor>();
 
         private IndexingResult ExtractIndexDataFromDocument(AnonymousObjectToLuceneDocumentConverter anonymousObjectToLuceneDocumentConverter, object doc)
         {
-            Type type = doc.GetType();
-            PropertyDescriptorCollection properties =
-                propertyDescriptorCache.GetOrAdd(type, TypeDescriptor.GetProperties);
+            PropertyAccessor propertyAccessor;
+            var newDocId = GetDocumentId(doc, out propertyAccessor);
 
-            var abstractFields = anonymousObjectToLuceneDocumentConverter.Index(doc, properties, Field.Store.NO).ToList();
-            return new IndexingResult()
+            List<AbstractField> abstractFields;
+            try
+            {
+                abstractFields = anonymousObjectToLuceneDocumentConverter.Index(doc, propertyAccessor, Field.Store.NO).ToList();
+            }
+            catch (InvalidShapeException e)
+            {
+                throw new InvalidSpatialShapException(e, newDocId);
+            }
+
+            return new IndexingResult
             {
                 Fields = abstractFields,
-                NewDocId = properties.Find(Constants.DocumentIdFieldName, false).GetValue(doc) as string,
-                ShouldSkip = properties.Count > 1  // we always have at least __document_id
+                NewDocId = newDocId,
+                ShouldSkip = propertyAccessor.Properies.Count > 1  // we always have at least __document_id
                             && abstractFields.Count == 0
             };
         }
 
+        private string GetDocumentId(object doc, out PropertyAccessor accessor)
+        {
+            Type type = doc.GetType();
+            accessor = propertyAccessorCache.GetOrAdd(type, PropertyAccessor.Create);
+            return accessor.GetValue(Constants.DocumentIdFieldName, doc) as string;
+        }
 
         public override void Remove(string[] keys, WorkContext context)
         {
             Write((writer, analyzer, stats) =>
             {
                 stats.Operation = IndexingWorkStats.Status.Ignore;
-                logIndexing.Debug(() => string.Format("Deleting ({0}) from {1}", string.Join(", ", keys), name));
-                var batchers = context.IndexUpdateTriggers.Select(x => x.CreateBatcher(name))
+                if (logIndexing.IsDebugEnabled)
+                    logIndexing.Debug(() => string.Format("Deleting ({0}) from {1}", string.Join(", ", keys), PublicName));
+
+                var batchers = context.IndexUpdateTriggers.Select(x => x.CreateBatcher(indexId))
                     .Where(x => x != null)
                     .ToList();
 
                 keys.Apply(
-                    key => batchers.ApplyAndIgnoreAllErrors(
-                        exception =>
-                        {
-                            logIndexing.WarnException(
-                                string.Format("Error when executed OnIndexEntryDeleted trigger for index '{0}', key: '{1}'",
-                                              name, key),
-                                exception);
-                            context.AddError(name, key, exception.Message, "OnIndexEntryDeleted Trigger");
-                        },
-                        trigger => trigger.OnIndexEntryDeleted(key)));
+                    key =>
+                    InvokeOnIndexEntryDeletedOnAllBatchers(batchers, new Term(Constants.DocumentIdFieldName, key.ToLowerInvariant())));
+
                 writer.DeleteDocuments(keys.Select(k => new Term(Constants.DocumentIdFieldName, k.ToLowerInvariant())).ToArray());
                 batchers.ApplyAndIgnoreAllErrors(
                     e =>
                     {
-                        logIndexing.WarnException("Failed to dispose on index update trigger", e);
-                        context.AddError(name, null, e.Message, "Dispose Trigger");
+                        logIndexing.WarnException("Failed to dispose on index update trigger in " + PublicName, e);
+                        context.AddError(indexId, PublicName, null, e, "Dispose Trigger");
                     },
                     batcher => batcher.Dispose());
 
-                IndexStats currentIndexStats = null;
-                context.TransactionalStorage.Batch(accessor => currentIndexStats = accessor.Indexing.GetIndexStats(name));
-
-                return new IndexedItemsInfo
+                return new IndexedItemsInfo(GetLastEtagFromStats())
                 {
                     ChangedDocs = keys.Length,
-                    HighestETag = currentIndexStats.LastIndexedEtag,
                     DeletedKeys = keys
                 };
             });
@@ -357,7 +456,7 @@ namespace Raven.Database.Indexing
         /// <summary>
         /// For index recovery purposes
         /// </summary>
-        internal void RemoveDirectlyFromIndex(string[] keys)
+        internal void RemoveDirectlyFromIndex(string[] keys, Etag lastEtag)
         {
             Write((writer, analyzer, stats) =>
             {
@@ -365,9 +464,10 @@ namespace Raven.Database.Indexing
 
                 writer.DeleteDocuments(keys.Select(k => new Term(Constants.DocumentIdFieldName, k.ToLowerInvariant())).ToArray());
 
-                return new IndexedItemsInfo // just commit, don't create commit point and add any infor about deleted keys
+                return new IndexedItemsInfo(lastEtag) // just commit, don't create commit point and add any infor about deleted keys
                 {
-                    ChangedDocs = keys.Length
+                    ChangedDocs = keys.Length,
+                    DisableCommitPoint = true
                 };
             });
         }

@@ -1,9 +1,8 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 //  <copyright file="DocDbExtensions.cs" company="Hibernating Rhinos LTD">
 //      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
 //  </copyright>
 // -----------------------------------------------------------------------
-using System;
 using System.Linq;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
@@ -12,19 +11,20 @@ using Raven.Json.Linq;
 
 namespace Raven.Database.Extensions
 {
-	public static class DocDbExtensions
-	{
-		public static void AddAlert(this DocumentDatabase self,Alert alert)
-		{
-			while (true)
-			{
-			    using (var putSerialLock = self.DocumentLock.TryLock(250))
-			    {
-			        if (putSerialLock == null)
+    public static class DocDbExtensions
+    {
+        public static void AddAlert(this DocumentDatabase self, Alert alert)
+        {
+            while (true)
+            {
+                using (self.TransactionalStorage.DisableBatchNesting())
+                using (var putSerialLock = self.DocumentLock.TryLock(25))
+                {
+                    if (putSerialLock == null)
                         continue;
 
                     AlertsDocument alertsDocument;
-                    var alertsDoc = self.Get(Constants.RavenAlerts, null);
+                    var alertsDoc = self.Documents.Get(Constants.RavenAlerts, null);
                     RavenJObject metadata;
                     Etag etag;
                     if (alertsDoc == null)
@@ -42,22 +42,26 @@ namespace Raven.Database.Extensions
 
                     var withSameUniqe = alertsDocument.Alerts.FirstOrDefault(alert1 => alert1.UniqueKey == alert.UniqueKey);
                     if (withSameUniqe != null)
+                    {
+                        // copy information about observed
+                        alert.LastDismissedAt = withSameUniqe.LastDismissedAt;
                         alertsDocument.Alerts.Remove(withSameUniqe);
+                    }
 
                     alertsDocument.Alerts.Add(alert);
                     var document = RavenJObject.FromObject(alertsDocument);
                     document.Remove("Id");
                     try
                     {
-                        self.Put(Constants.RavenAlerts, etag, document, metadata, null);
+                        self.Documents.Put(Constants.RavenAlerts, etag, document, metadata, null);
                         return;
                     }
                     catch (ConcurrencyException)
                     {
                         //try again...
                     }
-			    }
-			}
-		}
-	}
+                }
+            }
+        }
+    }
 }

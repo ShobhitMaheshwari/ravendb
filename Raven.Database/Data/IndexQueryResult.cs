@@ -5,52 +5,59 @@
 //-----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using Raven.Abstractions.Data;
 using Raven.Json.Linq;
 
 namespace Raven.Database.Data
 {
-	public class IndexQueryResult : IEquatable<IndexQueryResult>
-	{
-		public string Key { get; set; }
-		public RavenJObject Projection { get; set; }
+    public class IndexQueryResult : IEquatable<IndexQueryResult>
+    {
+        public JsonDocument Document { get; set; }
+        public bool DocumentLoaded { get; set; }
 
-		public float Score { get; set; }
-	    public Dictionary<string, string[]> Highligtings { get; set; }
+        public string Key { get; set; }
+        public string ReduceVal { get; set; }
+        public RavenJObject Projection { get; set; }
 
-	    public bool Equals(IndexQueryResult other)
-		{
-			if (ReferenceEquals(null, other)) return false;
-			if (ReferenceEquals(this, other)) return true;
-			return Equals(other.Key, Key) && Equals(other.Projection, Projection) && other.Score.Equals(Score);
-		}
+        public float Score { get; set; }
+        public Dictionary<string, string[]> Highligtings { get; set; }
+        public string HighlighterKey { get; set; }
+        public string ScoreExplanation { get; set; }
 
-		public override bool Equals(object obj)
-		{
-			if (ReferenceEquals(null, obj)) return false;
-			if (ReferenceEquals(this, obj)) return true;
-			if (obj.GetType() != typeof (IndexQueryResult)) return false;
-			return Equals((IndexQueryResult) obj);
-		}
+        public bool Equals(IndexQueryResult other)
+        {
+            if (ReferenceEquals(null, other)) return false;
+            if (ReferenceEquals(this, other)) return true;
+            return Equals(other.Key, Key) && Equals(other.Projection, Projection) && other.Score.Equals(Score);
+        }
 
-		public override int GetHashCode()
-		{
-			unchecked
-			{
-				int result = (Key != null ? Key.GetHashCode() : 0);
-				result = (result*397) ^ (Projection != null ? Projection.GetHashCode() : 0);
-				result = (result*397) ^ Score.GetHashCode();
-				return result;
-			}
-		}
+        public override bool Equals(object obj)
+        {
+            if (ReferenceEquals(null, obj)) return false;
+            if (ReferenceEquals(this, obj)) return true;
+            if (obj.GetType() != typeof (IndexQueryResult)) return false;
+            return Equals((IndexQueryResult) obj);
+        }
 
-		public static bool operator ==(IndexQueryResult left, IndexQueryResult right)
-		{
-			return Equals(left, right);
-		}
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int result = (Key != null ? Key.GetHashCode() : 0);
+                result = (result*397) ^ (Projection != null ? Projection.GetHashCode() : 0);
+                result = (result*397) ^ Score.GetHashCode();
+                return result;
+            }
+        }
 
-		public static bool operator !=(IndexQueryResult left, IndexQueryResult right)
-		{
-			return !Equals(left, right);
-		}
-	}
+        public static bool operator ==(IndexQueryResult left, IndexQueryResult right)
+        {
+            return Equals(left, right);
+        }
+
+        public static bool operator !=(IndexQueryResult left, IndexQueryResult right)
+        {
+            return !Equals(left, right);
+        }
+    }
 }

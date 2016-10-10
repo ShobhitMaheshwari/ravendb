@@ -5,92 +5,98 @@
 //-----------------------------------------------------------------------
 namespace Raven.Abstractions.Data
 {
-	/// <summary>
-	/// Information about index failure rates
-	/// </summary>
-	public class IndexFailureInformation
-	{
-		/// <summary>
-		/// Gets a value indicating whether this is invalid index.
-		/// </summary>
-		/// <value>
-		/// 	<c>true</c> if this is invalid index; otherwise, <c>false</c>.
-		/// </value>
-		public bool IsInvalidIndex
-		{
-			get
-			{
-				if (Attempts == 0 || Errors == 0)
-					return false;
-				if(ReduceAttempts != null)
-				{
-					// we don't have enough attempts to make a useful determination
-					if (Attempts + ReduceAttempts < 100)
-						return false;
-					return (Errors + (ReduceErrors ?? 0))/(float) (Attempts + (ReduceAttempts ?? 0)) > 0.15;
-				}
-				// we don't have enough attempts to make a useful determination
-				if (Attempts < 100)
-					return false;
-				return (Errors / (float)Attempts) > 0.15;
-			}
-		}
+    /// <summary>
+    /// Information about index failure rates
+    /// </summary>
+    public class IndexFailureInformation
+    {
+        /// <summary>
+        /// Indicates whether this is invalid index.
+        /// </summary>
+        /// <value><c>true</c> if this is invalid index; otherwise, <c>false</c>.</value>
+        public bool IsInvalidIndex
+        {
+            get
+            {
+                return CheckIndexInvalid(Attempts, Errors, ReduceAttempts, ReduceErrors);
+            }
+        }
 
-		/// <summary>
-		/// Gets or sets the name.
-		/// </summary>
-		/// <value>The name.</value>
-		public string Name { get; set; }
-		/// <summary>
-		/// Gets or sets the number of indexing attempts.
-		/// </summary>
-		public int Attempts { get; set; }
-		/// <summary>
-		/// Gets or sets the number of indexing errors.
-		/// </summary>
-		public int Errors { get; set; }
-		/// <summary>
-		/// Gets or sets the number of indexing successes.
-		/// </summary>
-		public int Successes { get; set; }
+        public static bool CheckIndexInvalid(int attempts, int errors, int? reduceAttempts, int? reduceErrors)
+        {
+            if (attempts == 0 || errors == 0)
+                return false;
+            if (reduceAttempts != null)
+            {
+                // we don't have enough attempts to make a useful determination
+                if (attempts + reduceAttempts < 100)
+                    return false;
+                return (errors + (reduceErrors ?? 0)) / (float)(attempts + (reduceAttempts ?? 0)) > 0.15;
+            }
+            // we don't have enough attempts to make a useful determination
+            if (attempts < 100)
+                return false;
+            return (errors / (float)attempts) > 0.15;
+        }
 
-		/// <summary>
-		/// Gets or sets the number of reduce attempts.
-		/// </summary>
-		public int? ReduceAttempts { get; set; }
-		/// <summary>
-		/// Gets or sets the number of reduce errors.
-		/// </summary>
-		public int? ReduceErrors { get; set; }
-		/// <summary>
-		/// Gets or sets the number of reduce successes.
-		/// </summary>
-		public int? ReduceSuccesses { get; set; }
+        /// <summary>
+        /// Index id (internal).
+        /// </summary>
+        public int Id { get; set; }
 
-		/// <summary>
-		/// Gets the failure rate.
-		/// </summary>
-		/// <value>The failure rate.</value>
-		public float FailureRate
-		{
-			get
-			{
-				if (Attempts == 0)
-					return 0;
-				return (Errors / (float)Attempts);
-			}
-		}
+        /// <summary>
+        /// Number of indexing attempts.
+        /// </summary>
+        public int Attempts { get; set; }
 
-		/// <summary>
-		/// Gets the error message.
-		/// </summary>
-		/// <returns></returns>
-		public string GetErrorMessage()
-		{
-			const string msg =
-				"Index {0} is invalid, out of {1} indexing attempts, {2} has failed.\r\nError rate of {3:#.##%} exceeds allowed 15% error rate";
-			return string.Format(msg,
-			                     Name, Attempts, Errors, FailureRate);
-		}
-	}
+        /// <summary>
+        /// Number of indexing errors.
+        /// </summary>
+        public int Errors { get; set; }
+
+        /// <summary>
+        /// Number of indexing successes.
+        /// </summary>
+        public int Successes { get; set; }
+
+        /// <summary>
+        /// Number of reduce attempts.
+        /// </summary>
+        public int? ReduceAttempts { get; set; }
+
+        /// <summary>
+        /// Number of reduce errors.
+        /// </summary>
+        public int? ReduceErrors { get; set; }
+
+        /// <summary>
+        /// Number of reduce successes.
+        /// </summary>
+        public int? ReduceSuccesses { get; set; }
+
+        /// <summary>
+        /// Failure rate.
+        /// </summary>
+        public float FailureRate
+        {
+            get
+            {
+                if (Attempts == 0)
+                    return 0;
+                return (Errors / (float)Attempts);
+            }
+        }
+
+        /// <summary>
+        /// Error message.
+        /// </summary>
+        /// <returns></returns>
+        public string GetErrorMessage()
+        {
+            const string msg =
+                "Index {0} is invalid, out of {1} indexing attempts, {2} has failed.\r\nError rate of {3:#.##%} exceeds allowed 15% error rate";
+            return string.Format(msg,
+                                 Id, Attempts, Errors, FailureRate);
+        }
+    }
 }

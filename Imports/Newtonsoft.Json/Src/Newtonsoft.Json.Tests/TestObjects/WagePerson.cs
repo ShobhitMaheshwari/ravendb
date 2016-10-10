@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -25,9 +25,9 @@
 
 namespace Newtonsoft.Json.Tests.TestObjects
 {
-  public class WagePerson : Person
-  {
-    [JsonProperty]
-    public decimal HourlyWage { get; set; }
-  }
+    public class WagePerson : Person
+    {
+        [JsonProperty]
+        public decimal HourlyWage { get; set; }
+    }
 }

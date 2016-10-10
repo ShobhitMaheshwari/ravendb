@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -29,18 +29,19 @@ using System.Text;
 
 namespace Raven.Imports.Newtonsoft.Json
 {
-  /// <summary>
-  /// Specifies missing member handling options for the <see cref="JsonSerializer"/>.
-  /// </summary>
-  public enum MissingMemberHandling
-  {
     /// <summary>
-    /// Ignore a missing member and do not attempt to deserialize it.
+    /// Specifies missing member handling options for the <see cref="JsonSerializer"/>.
     /// </summary>
-    Ignore = 0,
-    /// <summary>
-    /// Throw a <see cref="JsonSerializationException"/> when a missing member is encountered during deserialization.
-    /// </summary>
-    Error = 1
-  }
+    public enum MissingMemberHandling
+    {
+        /// <summary>
+        /// Ignore a missing member and do not attempt to deserialize it.
+        /// </summary>
+        Ignore = 0,
+
+        /// <summary>
+        /// Throw a <see cref="JsonSerializationException"/> when a missing member is encountered during deserialization.
+        /// </summary>
+        Error = 1
+    }
 }

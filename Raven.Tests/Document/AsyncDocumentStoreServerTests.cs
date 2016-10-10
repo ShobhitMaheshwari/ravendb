@@ -11,13 +11,11 @@ using System.Threading.Tasks;
 using Raven.Abstractions.Commands;
 using Raven.Abstractions.Data;
 using Raven.Abstractions.Exceptions;
-using Raven.Abstractions.Extensions;
 using Raven.Abstractions.Indexing;
 using Raven.Client;
-using Raven.Client.Connection.Async;
-using Raven.Client.Extensions;
-using Raven.Database.Server;
 using Raven.Json.Linq;
+using Raven.Tests.Common;
+
 using Xunit;
 
 namespace Raven.Tests.Document
@@ -29,7 +27,7 @@ namespace Raven.Tests.Document
         public AsyncEmbeddedDocumentStoreServerTests()
         {
             ravenTest = new RavenTest();
-            DocumentStore = ravenTest.NewDocumentStore().Initialize();
+            DocumentStore = ravenTest.NewDocumentStore();
         }
 
         public override void Dispose()
@@ -41,14 +39,12 @@ namespace Raven.Tests.Document
 
     public class AsyncRemoteDocumentStoreServerTests : AsyncDocumentStoreServerTests
     {
-        private readonly string path;
-        private readonly RemoteClientTest ravenTest;
+        private readonly RavenTest ravenTest;
 
         public AsyncRemoteDocumentStoreServerTests()
         {
-            ravenTest = new RemoteClientTest();
-            NonAdminHttp.EnsureCanListenToWhenInNonAdminContext(8079);
-            DocumentStore = ravenTest.NewRemoteDocumentStore().Initialize();
+            ravenTest = new RavenTest();
+            DocumentStore = ravenTest.NewRemoteDocumentStore();
         }
 
         public override void Dispose()
@@ -67,7 +63,7 @@ namespace Raven.Tests.Document
         }
 
         [Fact]
-        public void Can_insert_sync_and_get_async()
+        public async Task Can_insert_sync_and_get_async()
         {
             var entity = new Company {Name = "Async Company"};
             using (var session = DocumentStore.OpenSession())
@@ -78,20 +74,19 @@ namespace Raven.Tests.Document
 
             using (var session = DocumentStore.OpenAsyncSession())
             {
-                var task = session.LoadAsync<Company>(entity.Id);
-
-                Assert.Equal("Async Company", task.Result.Name);
+                var task = await session.LoadAsync<Company>(entity.Id);
+                Assert.Equal("Async Company", task.Name);
             }
         }
 
         [Fact]
-        public void Can_insert_async_and_get_sync()
+        public async Task Can_insert_async_and_get_sync()
         {
             var entity = new Company {Name = "Async Company"};
             using (var session = DocumentStore.OpenAsyncSession())
             {
-                session.Store(entity);
-                session.SaveChangesAsync().Wait();
+                await session.StoreAsync(entity);
+                await session.SaveChangesAsync();
             }
 
             using (var session = DocumentStore.OpenSession())
@@ -103,27 +98,27 @@ namespace Raven.Tests.Document
         }
 
         [Fact]
-        public void Can_insert_async_and_multi_get_async()
+        public async Task Can_insert_async_and_multi_get_async()
         {
             var entity1 = new Company {Name = "Async Company #1"};
             var entity2 = new Company {Name = "Async Company #2"};
             using (var session = DocumentStore.OpenAsyncSession())
             {
-                session.Store(entity1);
-                session.Store(entity2);
-                session.SaveChangesAsync().Wait();
+                await session.StoreAsync(entity1);
+                await session.StoreAsync(entity2);
+                await session.SaveChangesAsync();
             }
 
             using (var session = DocumentStore.OpenAsyncSession())
             {
-                var task = session.LoadAsync<Company>(new[] {entity1.Id, entity2.Id});
-                Assert.Equal(entity1.Name, task.Result[0].Name);
-                Assert.Equal(entity2.Name, task.Result[1].Name);
+                var result = await session.LoadAsync<Company>(new[] { entity1.Id, entity2.Id });
+                Assert.Equal(entity1.Name, result[0].Name);
+                Assert.Equal(entity2.Name, result[1].Name);
             }
         }
 
         [Fact]
-        public void Can_defer_commands_until_savechanges_async()
+        public async Task Can_defer_commands_until_savechanges_async()
         {
             using (var session = DocumentStore.OpenAsyncSession())
             {
@@ -131,16 +126,14 @@ namespace Raven.Tests.Document
                 {
                     new PutCommandData
                     {
-                        Document =
-                            RavenJObject.FromObject(new Company {Name = "Hibernating Rhinos"}),
+                        Document = RavenJObject.FromObject(new Company {Name = "Hibernating Rhinos"}),
                         Etag = null,
                         Key = "rhino1",
                         Metadata = new RavenJObject(),
                     },
                     new PutCommandData
                     {
-                        Document =
-                            RavenJObject.FromObject(new Company {Name = "Hibernating Rhinos"}),
+                        Document = RavenJObject.FromObject(new Company {Name = "Hibernating Rhinos"}),
                         Etag = null,
                         Key = "rhino2",
                         Metadata = new RavenJObject(),
@@ -156,11 +149,11 @@ namespace Raven.Tests.Document
 
                 Assert.Equal(0, session.Advanced.NumberOfRequests);
 
-                session.SaveChangesAsync().Wait();
+                await session.SaveChangesAsync();
                 Assert.Equal(1, session.Advanced.NumberOfRequests); // This returns 0 for some reason in async mode
 
                 // Make sure that session is empty
-                session.SaveChangesAsync().Wait();
+                await session.SaveChangesAsync();
                 Assert.Equal(1, session.Advanced.NumberOfRequests);
             }
 
@@ -169,43 +162,40 @@ namespace Raven.Tests.Document
         }
 
         [Fact]
-        public void Can_query_by_index()
+        public async Task Can_query_by_index()
         {
             var entity = new Company {Name = "Async Company #1", Id = "companies/1"};
 
             using (var session = DocumentStore.OpenAsyncSession())
             {
-                session.Store(entity);
-                session.SaveChangesAsync().Wait();
+                await session.StoreAsync(entity);
+                await session.SaveChangesAsync();
             }
 
-            DocumentStore.AsyncDatabaseCommands
-                         .PutIndexAsync("Test", new IndexDefinition
-                         {
-                             Map = "from doc in docs.Companies select new { doc.Name }"
-                         }, true).Wait();
+            await DocumentStore.AsyncDatabaseCommands.PutIndexAsync("Test", new IndexDefinition
+            {
+                Map = "from doc in docs.Companies select new { doc.Name }"
+            }, true);
 
-            Task<QueryResult> query;
+            QueryResult query;
             while (true)
             {
-                query = DocumentStore.AsyncDatabaseCommands.QueryAsync("Test", new IndexQuery(), null);
+                query = await DocumentStore.AsyncDatabaseCommands.QueryAsync("Test", new IndexQuery(), null);
 
-                if (query.Result.IsStale == false)
-                {
+                if (query.IsStale == false)
                     break;
-                }
 
                 Thread.Sleep(100);
             }
-            Assert.NotEqual(0, query.Result.TotalResults);
+            Assert.NotEqual(0, query.TotalResults);
         }
 
         [Fact]
-        public void Can_project_value_from_collection()
+        public async Task Can_project_value_from_collection()
         {
             using (var session = DocumentStore.OpenAsyncSession())
             {
-                session.Store(new Company
+                await session.StoreAsync(new Company
                 {
                     Name = "Project Value Company",
                     Contacts = new List<Contact>
@@ -215,28 +205,25 @@ namespace Raven.Tests.Document
                     }
                 });
 
-                session.SaveChangesAsync().Wait();
+                await session.SaveChangesAsync();
 
-                Task<QueryResult> query;
+                QueryResult query;
                 while (true)
                 {
-                    query = DocumentStore.AsyncDatabaseCommands
-                                         .QueryAsync("dynamic",
-                                                     new IndexQuery
-                                                     {
-                                                         FieldsToFetch = new[] {"Contacts,Surname"}
-                                                     },
-                                                     new string[0]);
+                    query = await DocumentStore.AsyncDatabaseCommands.QueryAsync("dynamic",
+                                                                                 new IndexQuery
+                                                                                 {
+                                                                                     FieldsToFetch = new[] {"Contacts,Surname"}
+                                                                                 },
+                                                                                 new string[0]);
 
-                    if (query.Result.IsStale == false)
-                    {
+                    if (query.IsStale == false)
                         break;
-                    }
 
                     Thread.Sleep(100);
                 }
 
-                var ravenJToken = (RavenJArray) query.Result.Results[0]["Contacts"];
+                var ravenJToken = (RavenJArray) query.Results[0]["Contacts"];
                 Assert.Equal(2, ravenJToken.Count());
                 Assert.Equal("Abbot", ravenJToken[0].Value<string>("Surname"));
                 Assert.Equal("Costello", ravenJToken[1].Value<string>("Surname"));
@@ -244,190 +231,177 @@ namespace Raven.Tests.Document
         }
 
         [Fact]
-        public void CanInsertAsyncAndDeleteAsync()
+        public async Task CanInsertAsyncAndDeleteAsync()
         {
             var entity = new Company {Name = "Async Company #1", Id = "companies/1"};
             using (var session = DocumentStore.OpenAsyncSession())
             {
-                session.Store(entity);
-                session.SaveChangesAsync().Wait();
+                await session.StoreAsync(entity);
+                await session.SaveChangesAsync();
             }
 
             using (var for_loading = DocumentStore.OpenAsyncSession())
             {
-	            var company = for_loading.LoadAsync<Company>(entity.Id).Result;
-	            Assert.NotNull(company);
+                var company = for_loading.LoadAsync<Company>(entity.Id).Result;
+                Assert.NotNull(company);
             }
 
-	        using (var for_deleting = DocumentStore.OpenAsyncSession())
+            using (var for_deleting = DocumentStore.OpenAsyncSession())
             {
-				var e = for_deleting.LoadAsync<Company>(entity.Id).Result;
+                var e = await for_deleting.LoadAsync<Company>(entity.Id);
                 for_deleting.Delete(e);
-                for_deleting.SaveChangesAsync().Wait();
+                await for_deleting.SaveChangesAsync();
             }
 
             using (var for_verifying = DocumentStore.OpenAsyncSession())
             {
-				var company = for_verifying.LoadAsync<Company>(entity.Id).Result;
-				Assert.Null(company);
-			}
-		}
+                var company = await for_verifying.LoadAsync<Company>(entity.Id);
+                Assert.Null(company);
+            }
+        }
 
-		[Fact]
-		public void Can_patch_existing_document_when_present()
-		{
-			var company = new Company { Name = "Hibernating Rhinos" };
+        [Fact]
+        public async Task Can_patch_existing_document_when_present()
+        {
+            var company = new Company { Name = "Hibernating Rhinos" };
 
-			using (var session = DocumentStore.OpenAsyncSession())
-			{
-				session.StoreAsync(company).Wait();
-				session.SaveChangesAsync().Wait();
-			}
+            using (var session = DocumentStore.OpenAsyncSession())
+            {
+                await session.StoreAsync(company);
+                await session.SaveChangesAsync();
+            }
 
-			DocumentStore.AsyncDatabaseCommands.PatchAsync(
-				company.Id,
-				new[]
-				{
-					new PatchRequest
-					{
-						Type = PatchCommandType.Set,
-						Name = "Name",
-						Value = "Existing",
-					}
-				},
-				new[]
-				{
-					new PatchRequest
-					{
-						Type = PatchCommandType.Set,
-						Name = "Name",
-						Value = "New",
-					}
-				},
-				new RavenJObject()).Wait();
+            await DocumentStore.AsyncDatabaseCommands.PatchAsync(company.Id,
+                                                                 new[]
+                                                                 {
+                                                                     new PatchRequest
+                                                                     {
+                                                                         Type = PatchCommandType.Set,
+                                                                         Name = "Name",
+                                                                         Value = "Existing",
+                                                                     }
+                                                                 },
+                                                                 new[]
+                                                                 {
+                                                                     new PatchRequest
+                                                                     {
+                                                                         Type = PatchCommandType.Set,
+                                                                         Name = "Name",
+                                                                         Value = "New",
+                                                                     }
+                                                                 },
+                                                                 new RavenJObject());
 
-			using (var session = DocumentStore.OpenAsyncSession())
-			{
-				var company2 = session.LoadAsync<Company>(company.Id).Result;
+            using (var session = DocumentStore.OpenAsyncSession())
+            {
+                var company2 = await session.LoadAsync<Company>(company.Id);
 
-				Assert.NotNull(company2);
-				Assert.Equal(company2.Name, "Existing");
-			}
-		}
+                Assert.NotNull(company2);
+                Assert.Equal(company2.Name, "Existing");
+            }
+        }
 
-		[Fact]
-		public void Can_patch_default_document_when_missing()
-		{
-			DocumentStore.AsyncDatabaseCommands.PatchAsync(
-				"Company/1",
-				new[]
-				{
-					new PatchRequest
-					{
-						Type = PatchCommandType.Set,
-						Name = "Name",
-						Value = "Existing",
-					}
-				},
-				new[]
-				{
-					new PatchRequest
-					{
-						Type = PatchCommandType.Set,
-						Name = "Name",
-						Value = "New",
-					}
-				},
-				new RavenJObject()).Wait();
+        [Fact]
+        public async Task Can_patch_default_document_when_missing()
+        {
+            await DocumentStore.AsyncDatabaseCommands.PatchAsync("Company/1",
+                                                                 new[]
+                                                                 {
+                                                                     new PatchRequest
+                                                                     {
+                                                                         Type = PatchCommandType.Set,
+                                                                         Name = "Name",
+                                                                         Value = "Existing",
+                                                                     }
+                                                                 },
+                                                                 new[]
+                                                                 {
+                                                                     new PatchRequest
+                                                                     {
+                                                                         Type = PatchCommandType.Set,
+                                                                         Name = "Name",
+                                                                         Value = "New",
+                                                                     }
+                                                                 },
+                                                                 new RavenJObject());
 
-			using (var session = DocumentStore.OpenAsyncSession())
-			{
-				var company = session.LoadAsync<Company>("Company/1").Result;
+            using (var session = DocumentStore.OpenAsyncSession())
+            {
+                var company = await session.LoadAsync<Company>("Company/1");
 
-				Assert.NotNull(company);
-				Assert.Equal(company.Name, "New");
-			}
-		}
+                Assert.NotNull(company);
+                Assert.Equal(company.Name, "New");
+            }
+        }
 
-		[Fact]
-		public void Should_not_throw_when_ignore_missing_true()
-		{
-			Assert.DoesNotThrow(
-				() => DocumentStore.AsyncDatabaseCommands.PatchAsync(
-					"Company/1",
-					new[]
-					{
-						new PatchRequest
-						{
-							Type = PatchCommandType.Set,
-							Name = "Name",
-							Value = "Existing",
-						}
-					}).Wait());
+        [Fact]
+        public void Should_not_throw_when_ignore_missing_true()
+        {
+            Assert.DoesNotThrow(() => DocumentStore.AsyncDatabaseCommands.PatchAsync(
+                "Company/1",
+                new[]
+                {
+                    new PatchRequest
+                    {
+                        Type = PatchCommandType.Set,
+                        Name = "Name",
+                        Value = "Existing",
+                    }
+                }).Wait());
 
-			Assert.DoesNotThrow(
-				() => DocumentStore.AsyncDatabaseCommands.PatchAsync(
-					"Company/1",
-					new[]
-					{
-						new PatchRequest
-						{
-							Type = PatchCommandType.Set,
-							Name = "Name",
-							Value = "Existing",
-						}
-					}, true).Wait());
-		}
+            Assert.DoesNotThrow( () =>  DocumentStore.AsyncDatabaseCommands.PatchAsync(
+                "Company/1",
+                new[]
+                {
+                    new PatchRequest
+                    {
+                        Type = PatchCommandType.Set,
+                        Name = "Name",
+                        Value = "Existing",
+                    }
+                }, true).Wait());
+        }
 
-		[Fact]
-		public void Should_throw_when_ignore_missing_false()
-		{
-			Assert.Throws<DocumentDoesNotExistsException>(
-				() =>
-				{
-					try
-					{
-						DocumentStore.AsyncDatabaseCommands.PatchAsync(
-							"Company/1",
-							new[]
-							{
-								new PatchRequest
-								{
-									Type = PatchCommandType.Set,
-									Name = "Name",
-									Value = "Existing",
-								}
-							}, false).Wait();
-					}
-					catch (AggregateException e)
-					{
-						throw e.ExtractSingleInnerException();
-					}
-				});
-		}
+        [Fact]
+        public async Task Should_throw_when_ignore_missing_false()
+        {
+            await AssertAsync.Throws<DocumentDoesNotExistsException>(async () =>
+            {
+                await DocumentStore.AsyncDatabaseCommands.PatchAsync("Company/1",
+                                                                     new[]
+                                                                     {
+                                                                         new PatchRequest
+                                                                         {
+                                                                             Type = PatchCommandType.Set,
+                                                                             Name = "Name",
+                                                                             Value = "Existing",
+                                                                         }
+                                                                     }, false);
+            });
+        }
 
-		[Fact]
-		public void Should_return_false_on_batch_delete_when_document_missing()
-		{
-			BatchResult[] batchResult = DocumentStore.AsyncDatabaseCommands.BatchAsync(new[] { new DeleteCommandData { Key = "Company/1" } }).Result;
+        [Fact]
+        public async Task Should_return_false_on_batch_delete_when_document_missing()
+        {
+            BatchResult[] batchResult = await DocumentStore.AsyncDatabaseCommands.BatchAsync(new[] { new DeleteCommandData { Key = "Company/1" } });
 
-			Assert.NotNull(batchResult);
-			Assert.Equal(1, batchResult.Length);
-			Assert.NotNull(batchResult[0].Deleted);
-			Assert.False(batchResult[0].Deleted ?? true);
-		}
+            Assert.NotNull(batchResult);
+            Assert.Equal(1, batchResult.Length);
+            Assert.NotNull(batchResult[0].Deleted);
+            Assert.False(batchResult[0].Deleted ?? true);
+        }
 
-		[Fact]
-		public void Should_return_true_on_batch_delete_when_document_present()
-		{
-			DocumentStore.AsyncDatabaseCommands.PutAsync("Company/1", null, new RavenJObject(), new RavenJObject()).Wait();
+        [Fact]
+        public async Task Should_return_true_on_batch_delete_when_document_present()
+        {
+            await DocumentStore.AsyncDatabaseCommands.PutAsync("Company/1", null, new RavenJObject(), new RavenJObject());
 
-			BatchResult[] batchResult = DocumentStore.AsyncDatabaseCommands.BatchAsync(new[] { new DeleteCommandData { Key = "Company/1" } }).Result;
+            BatchResult[] batchResult = await DocumentStore.AsyncDatabaseCommands.BatchAsync(new[] { new DeleteCommandData { Key = "Company/1" } });
 
-			Assert.NotNull(batchResult);
-			Assert.Equal(1, batchResult.Length);
-			Assert.NotNull(batchResult[0].Deleted);
-			Assert.True(batchResult[0].Deleted ?? false);
-		}
-	}
+            Assert.NotNull(batchResult);
+            Assert.Equal(1, batchResult.Length);
+            Assert.NotNull(batchResult[0].Deleted);
+            Assert.True(batchResult[0].Deleted ?? false);
+        }
+    }
 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Text;
 using Raven.Imports.Newtonsoft.Json.Linq;
@@ -6,19 +6,19 @@ using Raven.Json.Linq;
 
 namespace Raven.Bundles.UniqueConstraints
 {
-	internal static class Util
-	{
-		public static string EscapeUniqueValue(object value, bool caseInsensitive = false)
-		{
-			var stringToEscape = value.ToString();
+    public static class Util
+    {
+        public static string EscapeUniqueValue(object value, bool caseInsensitive = false)
+        {
+            var stringToEscape = value.ToString();
             if (caseInsensitive)
-		        stringToEscape = stringToEscape.ToLowerInvariant();
-			var escapeDataString = Uri.EscapeDataString(stringToEscape);
-			if (stringToEscape == escapeDataString)
-				return stringToEscape;
-			// to avoid issues with ids, we encode the entire thing as safe Base64
-			return Convert.ToBase64String(Encoding.UTF8.GetBytes(stringToEscape));
-		}
+                stringToEscape = stringToEscape.ToLowerInvariant();
+            var escapeDataString = Uri.EscapeDataString(stringToEscape);
+            if (stringToEscape == escapeDataString)
+                return stringToEscape;
+            // to avoid issues with ids, we encode the entire thing as safe Base64
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(stringToEscape));
+        }
 
         public static UniqueConstraint GetConstraint(RavenJToken property)
         {
@@ -36,17 +36,17 @@ namespace Raven.Bundles.UniqueConstraints
 
         public static bool TryGetUniqueValues(RavenJToken prop, out string[] uniqueValues)
         {
-            if (prop == null || prop.Type == JTokenType.Null)
+            if (prop == null || prop.Type == JTokenType.Null || (prop.Type == JTokenType.String && string.IsNullOrEmpty(prop.Value<string>())))
             {
                 uniqueValues = null;
                 return false;
             }
 
             var array = prop as RavenJArray;
-            uniqueValues = array != null ? array.Select(p => p.Value<string>()).ToArray() : new[] { prop.Value<string>() };
+            uniqueValues = array != null ? array.Select(p => p.Value<string>()).Where(x => !string.IsNullOrEmpty(x)).ToArray() : new[] { prop.Value<string>() };
             return true;
         }
-	}
+    }
 
     public class UniqueConstraint
     {

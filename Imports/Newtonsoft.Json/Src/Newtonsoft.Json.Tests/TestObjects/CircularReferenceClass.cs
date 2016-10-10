@@ -1,4 +1,4 @@
-﻿#region License
+#region License
 // Copyright (c) 2007 James Newton-King
 //
 // Permission is hereby granted, free of charge, to any person
@@ -25,11 +25,12 @@
 
 namespace Raven.Imports.Newtonsoft.Json.Tests.TestObjects
 {
-  public class CircularReferenceClass
-  {
-    [JsonProperty(Required = Required.Always)]
-    public string Name { get; set; }
-    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
-    public CircularReferenceClass Child { get; set; }
-  }
+    public class CircularReferenceClass
+    {
+        [JsonProperty(Required = Required.Always)]
+        public string Name { get; set; }
+
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public CircularReferenceClass Child { get; set; }
+    }
 }

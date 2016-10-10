@@ -18,214 +18,233 @@ using Version = Lucene.Net.Util.Version;
 
 namespace Raven.Database.Indexing
 {
-	
-	public class RangeQueryParser : QueryParser
-	{
-		public static readonly Regex NumericRangeValue = new Regex(@"^[\w\d]x[-\w\d.]+$", RegexOptions.Compiled);
+    
+    public class RangeQueryParser : QueryParser
+    {
+        public static readonly Regex NumericRangeValue = new Regex(@"^[\w\d]x[-\w\d.]+$", RegexOptions.Compiled);
+        public static readonly Regex DateTimeValue = new Regex(@"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z?)",RegexOptions.Compiled);
 
-		private readonly Dictionary<string, HashSet<string>> untokenized = new Dictionary<string, HashSet<string>>();
-		private readonly Dictionary<Tuple<string,string>, string> replacedTokens = new Dictionary<Tuple<string, string>, string>();
+        private readonly Dictionary<string, HashSet<string>> untokenized = new Dictionary<string, HashSet<string>>();
+        private readonly Dictionary<Tuple<string,string>, string> replacedTokens = new Dictionary<Tuple<string, string>, string>();
 
-		public RangeQueryParser(Version matchVersion, string f, Analyzer a)
-			: base(matchVersion, f, a)
-		{
-		}
+        public RangeQueryParser(Version matchVersion, string f, Analyzer a)
+            : base(matchVersion, f, a)
+        {
+        }
 
-		public string ReplaceToken(string fieldName, string replacement)
-		{
-			var tokenReplacement = Guid.NewGuid().ToString("n");
+        public string ReplaceToken(string fieldName, string replacement)
+        {
+            var tokenReplacement = Guid.NewGuid().ToString("n");
 
-			replacedTokens[Tuple.Create(fieldName, tokenReplacement)] = replacement;
+            replacedTokens[Tuple.Create(fieldName, tokenReplacement)] = replacement;
 
-			return tokenReplacement;
-		}
+            return tokenReplacement;
+        }
 
-		protected override Query GetPrefixQuery(string field, string termStr)
-		{
-			var fieldQuery = GetFieldQuery(field, termStr);
+        public string ReplaceDateTimeTokensInMethod(string fieldName, string collection)
+        {
+            var searchMatches = DateTimeValue.Matches(collection);
+            var queryStringBuilder = new StringBuilder(collection);
+            for (var i = searchMatches.Count - 1; i >= 0; i--) 
+            {
+                var searchMatch = searchMatches[i];
+                var keyOfTokenReplacment = Guid.NewGuid().ToString("n");
+                replacedTokens[Tuple.Create(fieldName, keyOfTokenReplacment)] = searchMatch.Value;
 
-			var tq = fieldQuery as TermQuery;
-			if (tq == null)
-			{
-				var booleanQuery = new BooleanQuery
-				{
-					{NewPrefixQuery(new Term(field, termStr)), Occur.SHOULD},
-					{NewPrefixQuery(new Term(field, termStr.ToLowerInvariant())), Occur.SHOULD}
-				};
-				return booleanQuery;
-			}
-			return NewPrefixQuery(tq.Term);
-		}
+                queryStringBuilder.Remove(searchMatch.Index, searchMatch.Length);
+                queryStringBuilder.Insert(searchMatch.Index, keyOfTokenReplacment);
+            }
 
-		protected override Query GetWildcardQuery(string field, string termStr)
-		{
-			if (termStr == "*")
-			{
-				return field == "*" ? 
-					NewMatchAllDocsQuery() : 
-					NewWildcardQuery(new Term(field, termStr));
-			}
+            var tokenReplacement = queryStringBuilder.ToString();
+            return tokenReplacement;
+        }
 
-			var fieldQuery = GetFieldQuery(field, termStr);
+        protected override Query GetPrefixQuery(string field, string termStr)
+        {
+            var fieldQuery = GetFieldQuery(field, termStr);
 
-			string analyzedTerm;
-			var tq = fieldQuery as TermQuery;
-			var pq = fieldQuery as PhraseQuery;
-			if (tq != null)
-			{
-				analyzedTerm = tq.Term.Text;
+            var tq = fieldQuery as TermQuery;
+            if (tq == null)
+            {
+                var booleanQuery = new BooleanQuery
+                {
+                    {NewPrefixQuery(new Term(field, termStr)), Occur.SHOULD},
+                    {NewPrefixQuery(new Term(field, termStr.ToLowerInvariant())), Occur.SHOULD}
+                };
+                return booleanQuery;
+            }
+            return NewPrefixQuery(tq.Term);
+        }
 
-				if (termStr.StartsWith("*") && analyzedTerm.StartsWith("*") == false)
-					analyzedTerm = "*" + analyzedTerm;
+        protected override Query GetWildcardQuery(string field, string termStr)
+        {
+            if (termStr == "*")
+            {
+                return field == "*" ? 
+                    NewMatchAllDocsQuery() : 
+                    NewWildcardQuery(new Term(field, termStr));
+            }
 
-				if (termStr.EndsWith("*") && analyzedTerm.EndsWith("*") == false)
-					analyzedTerm += "*";
-			}
-			else if(pq != null)
-			{
-				// search ?,* in source not in target, add them per position. e.g: 
-				// *foo* -> foo == *foo*
-				// Bro?n -> bro n == "bro?n"
+            var fieldQuery = GetFieldQuery(field, termStr);
 
-				var builder = new StringBuilder();
-				foreach (var term in pq.GetTerms())
-				{
-					if (builder.Length < termStr.Length)
-					{
-						var c = termStr[builder.Length];
-						if (c == '?' || c == '*')
-						{
-							builder.Append(c);
-						}
-					}
-					builder.Append(term.Text);
-				}
-				analyzedTerm = builder.ToString();
-			}
-			else
-			{
-				analyzedTerm = termStr;
-			}
+            string analyzedTerm;
+            var tq = fieldQuery as TermQuery;
+            var pq = fieldQuery as PhraseQuery;
+            if (tq != null)
+            {
+                analyzedTerm = tq.Term.Text;
 
-			return NewWildcardQuery(new Term(field, analyzedTerm));
-		}
+                if (termStr.StartsWith("*") && analyzedTerm.StartsWith("*") == false)
+                    analyzedTerm = "*" + analyzedTerm;
 
-		protected override Query GetFuzzyQuery(string field, string termStr, float minSimilarity)
-		{
-			var fieldQuery = GetFieldQuery(field, termStr);
+                if (termStr.EndsWith("*") && analyzedTerm.EndsWith("*") == false)
+                    analyzedTerm += "*";
+            }
+            else if(pq != null)
+            {
+                // search ?,* in source not in target, add them per position. e.g: 
+                // *foo* -> foo == *foo*
+                // Bro?n -> bro n == "bro?n"
 
-			var tq = fieldQuery as TermQuery;
-			return NewFuzzyQuery(tq != null ? tq.Term : new Term(field, termStr), minSimilarity, FuzzyPrefixLength);
-		}
+                var builder = new StringBuilder();
+                foreach (var term in pq.GetTerms())
+                {
+                    if (builder.Length < termStr.Length)
+                    {
+                        var c = termStr[builder.Length];
+                        if (c == '?' || c == '*')
+                        {
+                            builder.Append(c);
+                        }
+                    }
+                    builder.Append(term.Text);
+                }
+                analyzedTerm = builder.ToString();
+            }
+            else
+            {
+                analyzedTerm = termStr;
+            }
 
-		protected override Query GetFieldQuery(string field, string queryText)
-		{
-			string value;
-			if (replacedTokens.TryGetValue(Tuple.Create(field, queryText), out value))
-				return new TermQuery(new Term(field, value));
+            return NewWildcardQuery(new Term(field, analyzedTerm));
+        }
 
-			HashSet<string> set;
-			if(untokenized.TryGetValue(field, out set))
-			{
-				if (set.Contains(queryText))
-					return new TermQuery(new Term(field, queryText));
-			}
+        protected override Query GetFuzzyQuery(string field, string termStr, float minSimilarity)
+        {
+            var fieldQuery = GetFieldQuery(field, termStr);
 
-			var fieldQuery = base.GetFieldQuery(field, queryText);
-			if (fieldQuery is TermQuery
-				&& queryText.EndsWith("*")
-				&& !queryText.EndsWith(@"\*")
-				&& queryText.Contains(" "))
-			{ 
-				var analyzer = Analyzer;
-				var tokenStream = analyzer.ReusableTokenStream(field, new StringReader(queryText.Substring(0, queryText.Length-1)));
-				var sb = new StringBuilder();
-				while (tokenStream.IncrementToken())
-				{
-					var attribute = (TermAttribute) tokenStream.GetAttribute<ITermAttribute>();
-					if (sb.Length != 0)
-						sb.Append(' ');
-					sb.Append(attribute.Term);
-				}
-				var prefix = new Term(field, sb.ToString());
-				return new PrefixQuery(prefix);
-			}
-			return fieldQuery;
-		}
+            var tq = fieldQuery as TermQuery;
+            return NewFuzzyQuery(tq != null ? tq.Term : new Term(field, termStr), minSimilarity, FuzzyPrefixLength);
+        }
 
-		/// <summary>
-		/// Detects numeric range terms and expands range expressions accordingly
-		/// </summary>
-		/// <param name="field"></param>
-		/// <param name="lower"></param>
-		/// <param name="upper"></param>
-		/// <param name="inclusive"></param>
-		/// <returns></returns>
-		protected override Query GetRangeQuery(string field, string lower, string upper, bool inclusive)
-		{
-			bool minInclusive = inclusive;
-			bool maxInclusive = inclusive;
-			if (lower == "NULL" || lower == "*")
-			{
-				lower = null;
-				minInclusive = true;
-			}
-			if (upper == "NULL" || upper == "*")
-			{
-				upper = null;
-				maxInclusive = true;
-			}
+        protected override Query GetFieldQuery(string field, string queryText)
+        {
+            string value;
+            if (replacedTokens.TryGetValue(Tuple.Create(field, queryText), out value))
+                return new TermQuery(new Term(field, value));
 
-			if ( (lower == null || !NumericRangeValue.IsMatch(lower)) && (upper == null || !NumericRangeValue.IsMatch(upper)))
-			{
-				return NewRangeQuery(field, lower, upper, inclusive);
-			}
+            HashSet<string> set;
+            if(untokenized.TryGetValue(field, out set))
+            {
+                if (set.Contains(queryText))
+                    return new TermQuery(new Term(field, queryText));
+            }
 
-			var from = NumberUtil.StringToNumber(lower);
-			var to = NumberUtil.StringToNumber(upper);
+            var fieldQuery = base.GetFieldQuery(field, queryText);
+            if (fieldQuery is TermQuery
+                && queryText.EndsWith("*")
+                && !queryText.EndsWith(@"\*")
+                && queryText.Contains(" "))
+            { 
+                var analyzer = Analyzer;
+                var tokenStream = analyzer.ReusableTokenStream(field, new StringReader(queryText.Substring(0, queryText.Length-1)));
+                var sb = new StringBuilder();
+                while (tokenStream.IncrementToken())
+                {
+                    var attribute = (TermAttribute) tokenStream.GetAttribute<ITermAttribute>();
+                    if (sb.Length != 0)
+                        sb.Append(' ');
+                    sb.Append(attribute.Term);
+                }
+                var prefix = new Term(field, sb.ToString());
+                return new PrefixQuery(prefix);
+            }
+            return fieldQuery;
+        }
 
-			TypeCode numericType;
+        /// <summary>
+        /// Detects numeric range terms and expands range expressions accordingly
+        /// </summary>
+        /// <param name="field"></param>
+        /// <param name="lower"></param>
+        /// <param name="upper"></param>
+        /// <param name="inclusive"></param>
+        /// <returns></returns>
+        protected override Query GetRangeQuery(string field, string lower, string upper, bool inclusive)
+        {
+            bool minInclusive = inclusive;
+            bool maxInclusive = inclusive;
+            if (lower == "NULL" || lower == "*")
+            {
+                lower = null;
+                minInclusive = true;
+            }
+            if (upper == "NULL" || upper == "*")
+            {
+                upper = null;
+                maxInclusive = true;
+            }
 
-			if (from != null)
-				numericType = Type.GetTypeCode(from.GetType());
-			else if (to != null)
-				numericType = Type.GetTypeCode(to.GetType());
-			else
-				numericType = TypeCode.Empty;
+            if ( (lower == null || !NumericRangeValue.IsMatch(lower)) && (upper == null || !NumericRangeValue.IsMatch(upper)))
+            {
+                return NewRangeQuery(field, lower, upper, inclusive);
+            }
 
-			switch (numericType)
-			{
-				case TypeCode.Int32:
-				{
-					return NumericRangeQuery.NewIntRange(field, (int)(from ?? Int32.MinValue), (int)(to ?? Int32.MaxValue), minInclusive, maxInclusive);
-				}
-				case TypeCode.Int64:
-				{
-					return NumericRangeQuery.NewLongRange(field, (long)(from ?? Int64.MinValue), (long)(to ?? Int64.MaxValue), minInclusive, maxInclusive);
-				}
-				case TypeCode.Double:
-				{
-					return NumericRangeQuery.NewDoubleRange(field, (double)(from ?? Double.MinValue), (double)(to ?? Double.MaxValue), minInclusive, maxInclusive);
-				}
-				case TypeCode.Single:
-				{
-					return NumericRangeQuery.NewFloatRange(field, (float)(from ?? Single.MinValue), (float)(to ?? Single.MaxValue), minInclusive, maxInclusive);
-				}
-				default:
-				{
-					return NewRangeQuery(field, lower, upper, inclusive);
-				}
-			}
-		}
+            var from = NumberUtil.StringToNumber(lower);
+            var to = NumberUtil.StringToNumber(upper);
 
-		public void SetUntokenized(string field, string value)
-		{
-			HashSet<string> set;
-			if(untokenized.TryGetValue(field,out set) == false)
-			{
-				untokenized[field] = set = new HashSet<string>();
-			}
-			set.Add(value);
-		}
-	}
+            TypeCode numericType;
+
+            if (from != null)
+                numericType = Type.GetTypeCode(from.GetType());
+            else if (to != null)
+                numericType = Type.GetTypeCode(to.GetType());
+            else
+                numericType = TypeCode.Empty;
+
+            switch (numericType)
+            {
+                case TypeCode.Int32:
+                {
+                    return NumericRangeQuery.NewIntRange(field, (int)(from ?? Int32.MinValue), (int)(to ?? Int32.MaxValue), minInclusive, maxInclusive);
+                }
+                case TypeCode.Int64:
+                {
+                    return NumericRangeQuery.NewLongRange(field, (long)(from ?? Int64.MinValue), (long)(to ?? Int64.MaxValue), minInclusive, maxInclusive);
+                }
+                case TypeCode.Double:
+                {
+                    return NumericRangeQuery.NewDoubleRange(field, (double)(from ?? Double.MinValue), (double)(to ?? Double.MaxValue), minInclusive, maxInclusive);
+                }
+                case TypeCode.Single:
+                {
+                    return NumericRangeQuery.NewFloatRange(field, (float)(from ?? Single.MinValue), (float)(to ?? Single.MaxValue), minInclusive, maxInclusive);
+                }
+                default:
+                {
+                    return NewRangeQuery(field, lower, upper, inclusive);
+                }
+            }
+        }
+
+        public void SetUntokenized(string field, string value)
+        {
+            HashSet<string> set;
+            if(untokenized.TryGetValue(field,out set) == false)
+            {
+                untokenized[field] = set = new HashSet<string>();
+            }
+            set.Add(value);
+        }
+    }
 }
